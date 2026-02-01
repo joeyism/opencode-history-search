@@ -1,0 +1,73 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+*.tgz
+
+# Keep dist/ in repo (it's the bundled tool)
+# dist/
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+Thumbs.db
+desktop.ini
+._*
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+*.sublime-workspace
+
+# Test output
+test-results/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+.temp/
+
+# NPM
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Internal development documentation (keep in repo, exclude from npm)
+# These are NOT in package.json "files" so won't be published
+# Excluded from git to prevent clutter
+PHASE*.md
+CLEANUP*.md
+PUBLISHING_CHECKLIST.md
+PUBLISHABILITY_AUDIT.md
+
+# Development notes (keep tracked for reference)
+# CLAUDE.md

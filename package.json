@@ -1,0 +1,58 @@
+{
+  "name": "opencode-history-search",
+  "version": "1.0.0",
+  "description": "Search through OpenCode conversation history with keyword, regex, and fuzzy search support",
+  "main": "dist/history-search.ts",
+  "module": "src/index.ts",
+  "type": "module",
+  "bin": {
+    "opencode-history-search": "./install.ts"
+  },
+  "scripts": {
+    "install:tool": "bun run install.ts",
+    "test": "bun test",
+    "test:unit": "bun test src/**/*.test.ts",
+    "test:integration": "bun run test/comprehensive-test.ts",
+    "test:all": "bun test && bun run test/comprehensive-test.ts",
+    "build": "bun run build.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "opencode",
+    "tool",
+    "search",
+    "history",
+    "fuzzy-search",
+    "conversation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/opencode-history-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/opencode-history-search/issues"
+  },
+  "homepage": "https://github.com/yourusername/opencode-history-search#readme",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.1.48",
+    "fuse.js": "^7.1.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    "build.ts",
+    "install.ts",
+    "README.md",
+    "INSTALL.md",
+    "USAGE_IN_OPENCODE.md",
+    "LICENSE"
+  ]
+}

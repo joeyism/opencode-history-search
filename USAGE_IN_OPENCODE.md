@@ -16,7 +16,7 @@ npx opencode-history-search
 bunx opencode-history-search
 
 # Or directly from GitHub
-bunx github:yourusername/opencode-history-search
+bunx github:joeyism/opencode-history-search
 ```
 
 The installer automatically:
@@ -33,7 +33,7 @@ Then just restart OpenCode and you're ready!
 
    ```bash
    cd /path/to/your/projects
-   git clone https://github.com/yourusername/opencode-history-search.git
+   git clone https://github.com/joeyism/opencode-history-search.git
    cd opencode-history-search
    ```
 
@@ -101,17 +101,17 @@ The easiest way! Just ask your OpenCode AI agent to install it:
 Install the opencode-history-search tool
 ```
 
-**From local repository**:
+**From GitHub repository**:
 
 ```
-Install the history search tool from ~/Programming/node/opencode-history-search
+Install the opencode-history-search tool from https://github.com/joeyism/opencode-history-search
 ```
 
 **Detailed request**:
 
 ```
 Please install the opencode-history-search tool:
-1. Go to ~/Programming/node/opencode-history-search
+1. Clone https://github.com/joeyism/opencode-history-search
 2. Run bun install
 3. Run bun run build
 4. Run bun run install:tool

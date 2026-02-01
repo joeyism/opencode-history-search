@@ -33,17 +33,17 @@ Then restart OpenCode and start using it!
 npx opencode-history-search
 ```
 
-### 2. From GitHub (After Publishing)
+### 2. From GitHub
 
 ```bash
-npx github:yourusername/opencode-history-search
+npx github:joeyism/opencode-history-search
 ```
 
 ### 3. From Local Repository
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/opencode-history-search.git
+git clone https://github.com/joeyism/opencode-history-search.git
 cd opencode-history-search
 
 # Install dependencies and build

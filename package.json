@@ -29,12 +29,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/opencode-history-search.git"
+    "url": "https://github.com/joeyism/opencode-history-search.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/opencode-history-search/issues"
+    "url": "https://github.com/joeyism/opencode-history-search/issues"
   },
-  "homepage": "https://github.com/yourusername/opencode-history-search#readme",
+  "homepage": "https://github.com/joeyism/opencode-history-search#readme",
   "devDependencies": {
     "@types/bun": "latest"
   },

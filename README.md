@@ -1,6 +1,6 @@
 # opencode-history-search
 
-[![Tests](https://github.com/yourusername/opencode-history-search/workflows/Tests/badge.svg)](https://github.com/yourusername/opencode-history-search/actions)
+[![Tests](https://github.com/joeyism/opencode-history-search/workflows/Tests/badge.svg)](https://github.com/joeyism/opencode-history-search/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Search through your OpenCode conversation history with powerful keyword, regex, and fuzzy search capabilities.
@@ -28,8 +28,8 @@ npx opencode-history-search
 # Or using bunx (works with bun)
 bunx opencode-history-search
 
-# Or from GitHub (after publishing)
-npx github:yourusername/opencode-history-search
+# Or from GitHub
+npx github:joeyism/opencode-history-search
 ```
 
 That's it! The installer will:
@@ -46,7 +46,7 @@ If you prefer to install manually or from a local clone:
 
 ```bash
 # Clone and build
-git clone https://github.com/yourusername/opencode-history-search.git
+git clone https://github.com/joeyism/opencode-history-search.git
 cd opencode-history-search
 bun install
 bun run build
@@ -62,7 +62,7 @@ cp dist/history-search.ts ~/.opencode/tool/history-search.ts
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/opencode-history-search.git
+git clone https://github.com/joeyism/opencode-history-search.git
 cd opencode-history-search
 
 # Install dependencies
@@ -85,17 +85,17 @@ If you're using OpenCode or another AI coding assistant, you can ask the agent t
 Install the opencode-history-search tool using npx
 ```
 
-**From a local repository**:
+**From GitHub repository**:
 
 ```
-Install the history search tool from ~/Programming/node/opencode-history-search
+Install the opencode-history-search tool from GitHub: https://github.com/joeyism/opencode-history-search
 ```
 
 **Full installation request**:
 
 ```
 Please install the opencode-history-search tool:
-1. Navigate to ~/Programming/node/opencode-history-search
+1. Clone from https://github.com/joeyism/opencode-history-search
 2. Run bun install
 3. Run bun run build
 4. Run bun run install:tool

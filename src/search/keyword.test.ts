@@ -1,12 +1,25 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
 import { searchKeyword } from "./keyword";
+import {
+  MOCK_PROJECT_ID,
+  mockListSessions,
+  mockListMessages,
+  mockListParts,
+} from "../../test/fixtures/mock-data";
 
-const MAIN_PROJECT_ID = "4b0ea68d7af9a6031a7ffda7ad66e0cb83315750";
+mock.module("../storage", () => ({
+  listSessions: mockListSessions,
+  listMessages: mockListMessages,
+  listParts: mockListParts,
+  getStorageDir: async () => "/mock/storage",
+  getCurrentProjectID: async () => MOCK_PROJECT_ID,
+}));
 
-describe("keyword search", () => {
-  test("finds matches in actual history", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchKeyword(projectID, "storage", { limit: 5 });
+describe("keyword search (unit tests with mocks)", () => {
+  test("finds matches in mock data", async () => {
+    const results = await searchKeyword(MOCK_PROJECT_ID, "storage", {
+      limit: 5,
+    });
 
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]).toHaveProperty("sessionID");
@@ -14,18 +27,54 @@ describe("keyword search", () => {
     expect(results[0]).toHaveProperty("excerpt");
   });
 
+  test("finds title matches", async () => {
+    const results = await searchKeyword(MOCK_PROJECT_ID, "storage", {
+      limit: 5,
+    });
+
+    const titleMatch = results.find((r) => r.matchType === "title");
+    expect(titleMatch).toBeDefined();
+    expect(titleMatch?.sessionTitle).toContain("storage");
+  });
+
   test("case insensitive by default", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const lower = await searchKeyword(projectID, "storage", { limit: 5 });
-    const upper = await searchKeyword(projectID, "STORAGE", { limit: 5 });
+    const lower = await searchKeyword(MOCK_PROJECT_ID, "storage", { limit: 5 });
+    const upper = await searchKeyword(MOCK_PROJECT_ID, "STORAGE", { limit: 5 });
 
     expect(lower.length).toEqual(upper.length);
   });
 
-  test("respects limit parameter", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchKeyword(projectID, "the", { limit: 10 });
+  test("case sensitive when specified", async () => {
+    const results = await searchKeyword(MOCK_PROJECT_ID, "STORAGE", {
+      limit: 5,
+      caseSensitive: true,
+    });
 
-    expect(results.length).toBeLessThanOrEqual(10);
+    expect(results.length).toBe(0) // Should find 0 since mock has lowercase "storage";
+  });
+
+  test("respects limit parameter", async () => {
+    const results = await searchKeyword(MOCK_PROJECT_ID, "the", { limit: 2 });
+
+    expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  test("regex search works", async () => {
+    const results = await searchKeyword(MOCK_PROJECT_ID, "stor.*ge", {
+      regex: true,
+      limit: 5,
+    });
+
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  test("returns empty array for no matches", async () => {
+    const results = await searchKeyword(
+      MOCK_PROJECT_ID,
+      "nonexistent-xyz-123",
+      { limit: 5 },
+    );
+
+    expect(results.length).toBe(0) // Should find 0 since mock has lowercase "storage";
   });
 });

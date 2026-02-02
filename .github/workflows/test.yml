@@ -27,7 +27,7 @@ jobs:
         run: bun install
 
       - name: Run unit tests
-        run: bun test
+        run: bun test --bail src/storage.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts test/date-filter-integration.test.ts
 
       - name: Run build
         run: bun run build

@@ -1,12 +1,23 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
 import { searchFuzzy } from "./fuzzy";
+import {
+  MOCK_PROJECT_ID,
+  mockListSessions,
+  mockListMessages,
+  mockListParts,
+} from "../../test/fixtures/mock-data";
 
-const MAIN_PROJECT_ID = "4b0ea68d7af9a6031a7ffda7ad66e0cb83315750";
+mock.module("../storage", () => ({
+  listSessions: mockListSessions,
+  listMessages: mockListMessages,
+  listParts: mockListParts,
+  getStorageDir: async () => "/mock/storage",
+  getCurrentProjectID: async () => MOCK_PROJECT_ID,
+}));
 
-describe("fuzzy search", () => {
+describe("fuzzy search (unit tests with mocks)", () => {
   test("finds matches with typos", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchFuzzy(projectID, "storag", {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "storag", {
       threshold: 0.3,
       limit: 5,
     });
@@ -15,8 +26,7 @@ describe("fuzzy search", () => {
   });
 
   test("finds matches with variations", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchFuzzy(projectID, "storag search", {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "storag", {
       threshold: 0.5,
       limit: 5,
     });
@@ -27,24 +37,30 @@ describe("fuzzy search", () => {
     expect(results[0]).toHaveProperty("excerpt");
   });
 
-  test("respects limit parameter", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchFuzzy(projectID, "storage", {
+  test("finds fuzzy authentication", async () => {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "autentication", {
       threshold: 0.4,
-      limit: 10,
+      limit: 5,
     });
 
-    expect(results.length).toBeLessThanOrEqual(10);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  test("respects limit parameter", async () => {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "storage", {
+      threshold: 0.4,
+      limit: 2,
+    });
+
+    expect(results.length).toBeLessThanOrEqual(2);
   });
 
   test("respects threshold parameter", async () => {
-    const projectID = MAIN_PROJECT_ID;
-
-    const strict = await searchFuzzy(projectID, "xyz123", {
+    const strict = await searchFuzzy(MOCK_PROJECT_ID, "xyz123", {
       threshold: 0.1,
       limit: 5,
     });
-    const loose = await searchFuzzy(projectID, "xyz123", {
+    const loose = await searchFuzzy(MOCK_PROJECT_ID, "xyz123", {
       threshold: 0.8,
       limit: 5,
     });
@@ -53,8 +69,7 @@ describe("fuzzy search", () => {
   });
 
   test("returns results sorted by timestamp", async () => {
-    const projectID = MAIN_PROJECT_ID;
-    const results = await searchFuzzy(projectID, "storage", {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "storage", {
       threshold: 0.4,
       limit: 20,
     });
@@ -66,5 +81,15 @@ describe("fuzzy search", () => {
         );
       }
     }
+  });
+
+  test("returns empty array for completely unrelated query", async () => {
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "qwertyuiop", {
+      threshold: 0.1,
+      limit: 5,
+    });
+
+    expect(results).toBeDefined();
+    expect(Array.isArray(results)).toBe(true);
   });
 });

@@ -143,10 +143,26 @@ describe("parseDateFilter", () => {
 
 describe("filterByDate", () => {
   const mockResults = [
-    { id: "1", timestamp: "2024-01-15T10:00:00.000Z", content: "First" },
-    { id: "2", timestamp: "2024-01-16T14:30:00.000Z", content: "Second" },
-    { id: "3", timestamp: "2024-01-17T09:15:00.000Z", content: "Third" },
-    { id: "4", timestamp: "2024-02-01T12:00:00.000Z", content: "Fourth" },
+    {
+      id: "1",
+      timestamp: new Date("2024-01-15T10:00:00.000Z").getTime(),
+      content: "First",
+    },
+    {
+      id: "2",
+      timestamp: new Date("2024-01-16T14:30:00.000Z").getTime(),
+      content: "Second",
+    },
+    {
+      id: "3",
+      timestamp: new Date("2024-01-17T09:15:00.000Z").getTime(),
+      content: "Third",
+    },
+    {
+      id: "4",
+      timestamp: new Date("2024-02-01T12:00:00.000Z").getTime(),
+      content: "Fourth",
+    },
   ];
 
   test("filters results within date range", () => {
@@ -168,7 +184,9 @@ describe("filterByDate", () => {
 
     const filtered = filterByDate(mockResults, range);
     expect(filtered.length).toBe(1);
-    expect(filtered[0].id).toBe("2");
+    const first = filtered[0];
+    expect(first).toBeDefined();
+    expect(first?.id).toBe("2");
   });
 
   test("returns empty array when no results match", () => {

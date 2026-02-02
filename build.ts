@@ -19,5 +19,11 @@ if (!result.success) {
   process.exit(1);
 }
 
+const output = result.outputs[0];
+if (!output) {
+  console.error("Build failed: No outputs generated");
+  process.exit(1);
+}
+
 console.log("✓ Bundled to dist/history-search.ts");
-console.log(`  Size: ${(result.outputs[0].size / 1024).toFixed(1)} KB`);
+console.log(`  Size: ${(output.size / 1024).toFixed(1)} KB`);

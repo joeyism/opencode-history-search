@@ -1570,7 +1570,7 @@ function parseDateFilter(filter) {
     return { start, end };
   }
   const relativeMatch = normalized.match(/^last (\d+) (day|week|month)s?$/);
-  if (relativeMatch) {
+  if (relativeMatch && relativeMatch[1] && relativeMatch[2]) {
     const count = parseInt(relativeMatch[1], 10);
     const unit = relativeMatch[2];
     const end = new Date;
@@ -1586,7 +1586,7 @@ function parseDateFilter(filter) {
     return { start, end };
   }
   const rangeMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$/);
-  if (rangeMatch) {
+  if (rangeMatch && rangeMatch[1] && rangeMatch[2]) {
     const start = new Date(rangeMatch[1]);
     const end = new Date(rangeMatch[2]);
     end.setHours(23, 59, 59, 999);
@@ -1599,7 +1599,7 @@ function parseDateFilter(filter) {
     return { start, end };
   }
   const isoMatch = normalized.match(/^(\d{4}-\d{2}(?:-\d{2})?)$/);
-  if (isoMatch) {
+  if (isoMatch && isoMatch[1]) {
     const dateStr = isoMatch[1];
     if (dateStr.match(/^\d{4}-\d{2}$/)) {
       const start2 = new Date(`${dateStr}-01`);

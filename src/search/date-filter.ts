@@ -40,7 +40,7 @@ export function parseDateFilter(filter: string): DateRange {
 
   // "last N days/weeks/months" - from N units ago until now
   const relativeMatch = normalized.match(/^last (\d+) (day|week|month)s?$/);
-  if (relativeMatch) {
+  if (relativeMatch && relativeMatch[1] && relativeMatch[2]) {
     const count = parseInt(relativeMatch[1], 10);
     const unit = relativeMatch[2];
     const end = new Date();
@@ -62,7 +62,7 @@ export function parseDateFilter(filter: string): DateRange {
   const rangeMatch = normalized.match(
     /^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$/,
   );
-  if (rangeMatch) {
+  if (rangeMatch && rangeMatch[1] && rangeMatch[2]) {
     const start = new Date(rangeMatch[1]);
     const end = new Date(rangeMatch[2]);
     end.setHours(23, 59, 59, 999); // Include entire end date
@@ -80,7 +80,7 @@ export function parseDateFilter(filter: string): DateRange {
 
   // Single date: "YYYY-MM-DD" or "YYYY-MM" (month)
   const isoMatch = normalized.match(/^(\d{4}-\d{2}(?:-\d{2})?)$/);
-  if (isoMatch) {
+  if (isoMatch && isoMatch[1]) {
     const dateStr = isoMatch[1];
 
     // Month only (YYYY-MM)
@@ -117,11 +117,11 @@ export function parseDateFilter(filter: string): DateRange {
 
 /**
  * Filter search results by date range
- * @param results Array of search results with timestamp field
+ * @param results Array of search results with timestamp field (milliseconds since epoch)
  * @param dateRange DateRange to filter by
  * @returns Filtered array containing only results within the date range
  */
-export function filterByDate<T extends { timestamp: string }>(
+export function filterByDate<T extends { timestamp: number }>(
   results: T[],
   dateRange: DateRange,
 ): T[] {

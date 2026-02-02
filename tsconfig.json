@@ -25,5 +25,12 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test/comprehensive-test.ts",
+    "test/comprehensive-test-with-data.ts",
+    "verify-installation.ts"
+  ]
 }

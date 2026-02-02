@@ -61,9 +61,11 @@ describe("fuzzy search (integration - requires real data)", () => {
 
     if (results.length > 1) {
       for (let i = 0; i < results.length - 1; i++) {
-        expect(results[i].timestamp).toBeGreaterThanOrEqual(
-          results[i + 1].timestamp,
-        );
+        const current = results[i];
+        const next = results[i + 1];
+        if (current && next) {
+          expect(current.timestamp).toBeGreaterThanOrEqual(next.timestamp);
+        }
       }
     }
   });

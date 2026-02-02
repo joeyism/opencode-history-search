@@ -1,4 +1,4 @@
-import { test, expect, describe, mock } from "bun:test";
+import { test, expect, describe, mock, beforeAll, afterAll } from "bun:test";
 import { searchFuzzy } from "./fuzzy";
 import {
   MOCK_PROJECT_ID,
@@ -7,15 +7,20 @@ import {
   mockListParts,
 } from "../../test/fixtures/mock-data";
 
-mock.module("../storage", () => ({
-  listSessions: mockListSessions,
-  listMessages: mockListMessages,
-  listParts: mockListParts,
-  getStorageDir: async () => "/mock/storage",
-  getCurrentProjectID: async () => MOCK_PROJECT_ID,
-}));
-
 describe("fuzzy search (unit tests with mocks)", () => {
+  beforeAll(() => {
+    mock.module("../storage", () => ({
+      listSessions: mockListSessions,
+      listMessages: mockListMessages,
+      listParts: mockListParts,
+      getStorageDir: async () => "/mock/storage",
+      getCurrentProjectID: async () => MOCK_PROJECT_ID,
+    }));
+  });
+
+  afterAll(() => {
+    mock.restore();
+  });
   test("finds matches with typos", async () => {
     const results = await searchFuzzy(MOCK_PROJECT_ID, "storag", {
       threshold: 0.3,

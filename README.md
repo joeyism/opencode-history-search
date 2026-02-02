@@ -310,18 +310,17 @@ The tool searches across multiple content types:
 ### Running Tests
 
 ```bash
-# Run unit tests
-bun test
+# Run unit tests (recommended for development)
+bun run test
 
-# Run unit tests only
-bun run test:unit
-
-# Run integration tests
+# Run integration tests (requires real OpenCode conversation data)
 bun run test:integration
 
-# Run all tests
+# Run all tests (unit + integration sequentially)
 bun run test:all
 ```
+
+**Note**: Integration tests require actual OpenCode conversation data in `~/.local/share/opencode/storage/`. They will pass when run in isolation but may fail if run together with unit tests due to mock interference. Use the npm scripts above for reliable test execution.
 
 ### Building
 

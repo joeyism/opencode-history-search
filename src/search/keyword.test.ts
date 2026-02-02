@@ -1,4 +1,4 @@
-import { test, expect, describe, mock } from "bun:test";
+import { test, expect, describe, mock, beforeAll, afterAll } from "bun:test";
 import { searchKeyword } from "./keyword";
 import {
   MOCK_PROJECT_ID,
@@ -7,15 +7,20 @@ import {
   mockListParts,
 } from "../../test/fixtures/mock-data";
 
-mock.module("../storage", () => ({
-  listSessions: mockListSessions,
-  listMessages: mockListMessages,
-  listParts: mockListParts,
-  getStorageDir: async () => "/mock/storage",
-  getCurrentProjectID: async () => MOCK_PROJECT_ID,
-}));
-
 describe("keyword search (unit tests with mocks)", () => {
+  beforeAll(() => {
+    mock.module("../storage", () => ({
+      listSessions: mockListSessions,
+      listMessages: mockListMessages,
+      listParts: mockListParts,
+      getStorageDir: async () => "/mock/storage",
+      getCurrentProjectID: async () => MOCK_PROJECT_ID,
+    }));
+  });
+
+  afterAll(() => {
+    mock.restore();
+  });
   test("finds matches in mock data", async () => {
     const results = await searchKeyword(MOCK_PROJECT_ID, "storage", {
       limit: 5,
@@ -50,7 +55,7 @@ describe("keyword search (unit tests with mocks)", () => {
       caseSensitive: true,
     });
 
-    expect(results.length).toBe(0) // Should find 0 since mock has lowercase "storage";
+    expect(results.length).toBe(0); // Should find 0 since mock has lowercase "storage";
   });
 
   test("respects limit parameter", async () => {
@@ -75,6 +80,6 @@ describe("keyword search (unit tests with mocks)", () => {
       { limit: 5 },
     );
 
-    expect(results.length).toBe(0) // Should find 0 since mock has lowercase "storage";
+    expect(results.length).toBe(0); // Should find 0 since mock has lowercase "storage";
   });
 });

@@ -56,6 +56,9 @@ test-results/
 *.temp
 .temp/
 
+# Git worktrees
+.worktrees/
+
 # NPM
 npm-debug.log*
 yarn-debug.log*

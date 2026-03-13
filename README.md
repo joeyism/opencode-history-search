@@ -7,7 +7,7 @@
 
 Search through your OpenCode conversation history with keyword, regex, and fuzzy search.
 
-<video src="docs/sample.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/f492da67-3f54-4989-abb3-2d40c3a8fe7c" autoplay loop muted playsinline width="100%"></video>
 
 ## Features
 

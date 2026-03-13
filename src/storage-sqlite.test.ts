@@ -69,14 +69,14 @@ describe("SQLite storage schema compatibility", () => {
 
   test("parses text part correctly", () => {
     const rows = db.query("SELECT data FROM part WHERE id = ?").all("part_001") as Array<{ data: string }>;
-    const data = JSON.parse(rows[0].data);
+    const data = JSON.parse(rows[0]!.data);
     expect(data.type).toBe("text");
     expect(data.text).toContain("storage");
   });
 
   test("parses tool part correctly", () => {
     const rows = db.query("SELECT data FROM part WHERE id = ?").all("part_002") as Array<{ data: string }>;
-    const data = JSON.parse(rows[0].data);
+    const data = JSON.parse(rows[0]!.data);
     expect(data.type).toBe("tool");
     expect(data.tool).toBe("edit");
     expect(data.state.input.filePath).toBe("src/storage.ts");
@@ -84,14 +84,14 @@ describe("SQLite storage schema compatibility", () => {
 
   test("parses patch part with files array", () => {
     const rows = db.query("SELECT data FROM part WHERE id = ?").all("part_003") as Array<{ data: string }>;
-    const data = JSON.parse(rows[0].data);
+    const data = JSON.parse(rows[0]!.data);
     expect(data.type).toBe("patch");
     expect(data.files).toEqual(["src/storage.ts", "src/index.ts"]);
   });
 
   test("non-searchable types are present but skippable", () => {
     const rows = db.query("SELECT data FROM part WHERE id = ?").all("part_004") as Array<{ data: string }>;
-    const data = JSON.parse(rows[0].data);
+    const data = JSON.parse(rows[0]!.data);
     expect(data.type).toBe("reasoning");
     // Our code would skip this — not in the "text" | "tool" | "file" | "patch" set
   });

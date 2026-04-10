@@ -3,6 +3,7 @@ import { getCurrentProjectID } from "./storage-provider";
 import { searchKeyword, type SearchMatch } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
 import { parseDateFilter, filterByDate } from "./search/date-filter";
+import { traceFile, type FileTraceResult } from "./search/file-trace";
 
 function formatResults(matches: SearchMatch[]): string {
   if (matches.length === 0) {
@@ -33,15 +34,53 @@ function formatResults(matches: SearchMatch[]): string {
   return lines.join("\n");
 }
 
+function formatTraceResults(matches: FileTraceResult[]): string {
+  if (matches.length === 0) {
+    return "No file trace matches found in conversation history.";
+  }
+
+  const lines: string[] = [
+    `Found ${matches.length} file trace matches in conversation history:\n`,
+  ];
+
+  for (const match of matches) {
+    const date = new Date(match.timestamp).toISOString().split("T")[0];
+    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
+
+    lines.push(`## ${match.sessionTitle}`);
+    lines.push(`- Session ID: ${match.sessionID}`);
+    lines.push(`- Date: ${date} ${time}`);
+    lines.push(`- Status: ${match.firstTouch ? "First seen" : "Later touch"}`);
+    lines.push(`- File: ${match.filePath}`);
+    if (match.toolName) {
+      lines.push(`- Tool: ${match.toolName}`);
+    }
+    
+    if (match.userPrompt) {
+      lines.push(`- Preceding User Prompt: "${match.userPrompt}"`);
+    }
+
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 export default tool({
   description: `Search through past conversation histories in the current repository. 
 Searches session titles, message content, tool invocations, and file paths.
+Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
 Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
 
   args: {
     query: tool.schema
       .string()
-      .describe("Search query (keyword, regex pattern, or fuzzy search term)"),
+      .optional()
+      .describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
+    filePath: tool.schema
+      .string()
+      .optional()
+      .describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
     mode: tool.schema
       .enum(["keyword", "fuzzy"])
       .optional()
@@ -78,12 +117,34 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
       .enum(["user", "assistant"])
       .optional()
       .describe(
-        "Filter by message role: 'user' for your messages only, 'assistant' for AI responses only",
+        "Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.",
       ),
   },
 
   async execute(args) {
+    if (!args.query && !args.filePath) {
+      throw new Error("Either 'query' or 'filePath' must be provided.");
+    }
+
     const projectID = await getCurrentProjectID();
+
+    if (args.filePath) {
+      let matches = await traceFile(projectID, args.filePath, {
+        limit: args.limit,
+      });
+
+      if (args.date) {
+        const dateRange = parseDateFilter(args.date);
+        matches = filterByDate(matches, dateRange);
+      }
+
+      return formatTraceResults(matches);
+    }
+
+    // Default to query search if filePath is not provided
+    if (!args.query) {
+      throw new Error("'query' is required when 'filePath' is not provided.");
+    }
 
     let matches =
       args.mode === "fuzzy"

@@ -1,4 +1,22 @@
 // @bun
+var __create = Object.create;
+var __getProtoOf = Object.getPrototypeOf;
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __toESM = (mod, isNodeMode, target) => {
+  target = mod != null ? __create(__getProtoOf(mod)) : {};
+  const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
+  for (let key of __getOwnPropNames(mod))
+    if (!__hasOwnProp.call(to, key))
+      __defProp(to, key, {
+        get: () => mod[key],
+        enumerable: true
+      });
+  return to;
+};
+var __require = import.meta.require;
+
 // src/index.ts
 import { tool } from "@opencode-ai/plugin";
 
@@ -1776,6 +1794,148 @@ function filterByDate(results, dateRange) {
   });
 }
 
+// src/search/file-trace.ts
+function traceFileSqlite(db, projectID, queryPath, options) {
+  const normalizedQuery = queryPath.replace(/\\/g, "/");
+  const isExactPath = normalizedQuery.includes("/");
+  const likePattern = `%${normalizedQuery}%`;
+  const sql = `
+    SELECT
+      s.id AS session_id,
+      s.title AS session_title,
+      m.id AS message_id,
+      m.time_created AS message_time,
+      json_extract(p.data, '$.tool') AS tool_name,
+      json_extract(p.data, '$.state.input.filePath') AS matched_file_path_tool,
+      json_extract(p.data, '$.files') AS matched_files_patch,
+      0 AS source_priority
+    FROM session s
+    JOIN message m ON m.session_id = s.id
+    JOIN part p ON p.message_id = m.id
+    WHERE s.project_id = ?
+      AND json_valid(p.data)
+      AND json_extract(m.data, '$.role') = 'assistant'
+      AND json_extract(p.data, '$.type') = 'tool'
+      AND json_extract(p.data, '$.tool') IN ('write', 'edit')
+      AND json_extract(p.data, '$.state.input.filePath') LIKE ?
+      
+    UNION ALL
+
+    SELECT
+      s.id AS session_id,
+      s.title AS session_title,
+      m.id AS message_id,
+      m.time_created AS message_time,
+      NULL AS tool_name,
+      NULL AS matched_file_path_tool,
+      p.data AS matched_files_patch, -- using whole data to parse files in TS since sqlite json_each might be tricky with versions
+      1 AS source_priority
+    FROM session s
+    JOIN message m ON m.session_id = s.id
+    JOIN part p ON p.message_id = m.id
+    WHERE s.project_id = ?
+      AND json_valid(p.data)
+      AND json_extract(m.data, '$.role') = 'assistant'
+      AND json_extract(p.data, '$.type') = 'patch'
+      AND json_extract(p.data, '$.files') LIKE ?
+    ORDER BY message_time DESC, source_priority ASC
+  `;
+  const rows = db.query(sql).all(projectID, likePattern, projectID, likePattern);
+  const candidates = [];
+  for (const row of rows) {
+    let matchedPath = null;
+    if (row.source_priority === 0 && row.matched_file_path_tool) {
+      if (isMatch(row.matched_file_path_tool, normalizedQuery, isExactPath)) {
+        matchedPath = row.matched_file_path_tool;
+      }
+    } else if (row.source_priority === 1 && row.matched_files_patch) {
+      try {
+        const parsed = JSON.parse(row.matched_files_patch);
+        if (Array.isArray(parsed.files)) {
+          for (const f of parsed.files) {
+            if (isMatch(f, normalizedQuery, isExactPath)) {
+              matchedPath = f;
+              break;
+            }
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (matchedPath) {
+      candidates.push({
+        sessionID: row.session_id,
+        sessionTitle: row.session_title,
+        messageID: row.message_id,
+        timestamp: row.message_time,
+        toolName: row.tool_name,
+        filePath: matchedPath
+      });
+    }
+  }
+  const seen = new Set;
+  const deduped = [];
+  for (const c of candidates) {
+    const key = `${c.sessionID}|${c.messageID}|${c.filePath}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(c);
+    }
+  }
+  let earliestTime = Infinity;
+  let earliestIndex = -1;
+  for (let i = 0;i < deduped.length; i++) {
+    const candidate = deduped[i];
+    if (candidate && candidate.timestamp < earliestTime) {
+      earliestTime = candidate.timestamp;
+      earliestIndex = i;
+    }
+  }
+  const findUserPrompt = db.query(`
+    SELECT json_extract(p.data, '$.text') AS text
+    FROM message m
+    JOIN part p ON p.message_id = m.id
+    WHERE m.session_id = ?
+      AND m.time_created < ?
+      AND json_valid(p.data)
+      AND json_extract(m.data, '$.role') = 'user'
+      AND json_extract(p.data, '$.type') = 'text'
+    ORDER BY m.time_created DESC
+    LIMIT 1
+  `);
+  const results = deduped.map((c, idx) => {
+    const promptRow = findUserPrompt.get(c.sessionID, c.timestamp);
+    return {
+      sessionID: c.sessionID,
+      sessionTitle: c.sessionTitle,
+      timestamp: c.timestamp,
+      firstTouch: idx === earliestIndex,
+      userPrompt: promptRow ? promptRow.text : null,
+      toolName: c.toolName,
+      filePath: c.filePath
+    };
+  });
+  const limit = options?.limit ?? 50;
+  return results.slice(0, limit);
+}
+function isMatch(path3, query, isExact) {
+  if (isExact) {
+    return path3 === query;
+  }
+  return path3 === query || path3.endsWith(`/${query}`);
+}
+async function traceFile(projectID, filePath, options) {
+  const { Database: Database2 } = await import("bun:sqlite");
+  const dbPath = getDbPath();
+  const db = new Database2(dbPath, { readonly: true });
+  try {
+    return traceFileSqlite(db, projectID, filePath, options);
+  } finally {
+    db.close();
+  }
+}
+
 // src/index.ts
 function formatResults(matches) {
   if (matches.length === 0) {
@@ -1801,22 +1961,67 @@ function formatResults(matches) {
   return lines.join(`
 `);
 }
+function formatTraceResults(matches) {
+  if (matches.length === 0) {
+    return "No file trace matches found in conversation history.";
+  }
+  const lines = [
+    `Found ${matches.length} file trace matches in conversation history:
+`
+  ];
+  for (const match of matches) {
+    const date = new Date(match.timestamp).toISOString().split("T")[0];
+    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
+    lines.push(`## ${match.sessionTitle}`);
+    lines.push(`- Session ID: ${match.sessionID}`);
+    lines.push(`- Date: ${date} ${time}`);
+    lines.push(`- Status: ${match.firstTouch ? "First seen" : "Later touch"}`);
+    lines.push(`- File: ${match.filePath}`);
+    if (match.toolName) {
+      lines.push(`- Tool: ${match.toolName}`);
+    }
+    if (match.userPrompt) {
+      lines.push(`- Preceding User Prompt: "${match.userPrompt}"`);
+    }
+    lines.push("");
+  }
+  return lines.join(`
+`);
+}
 var src_default = tool({
   description: `Search through past conversation histories in the current repository. 
 Searches session titles, message content, tool invocations, and file paths.
+Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
 Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
   args: {
-    query: tool.schema.string().describe("Search query (keyword, regex pattern, or fuzzy search term)"),
+    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
+    filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
     mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
     regex: tool.schema.boolean().optional().describe("Treat query as regex pattern (keyword mode only, default: false)"),
     caseSensitive: tool.schema.boolean().optional().describe("Case-sensitive search (keyword mode only, default: false)"),
     fuzzyThreshold: tool.schema.number().optional().describe("Fuzzy match threshold 0.0-1.0 (fuzzy mode only, default: 0.4, lower = stricter)"),
     date: tool.schema.string().optional().describe("Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"),
     limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
-    role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only")
+    role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
   async execute(args) {
+    if (!args.query && !args.filePath) {
+      throw new Error("Either 'query' or 'filePath' must be provided.");
+    }
     const projectID = await getCurrentProjectID();
+    if (args.filePath) {
+      let matches2 = await traceFile(projectID, args.filePath, {
+        limit: args.limit
+      });
+      if (args.date) {
+        const dateRange = parseDateFilter(args.date);
+        matches2 = filterByDate(matches2, dateRange);
+      }
+      return formatTraceResults(matches2);
+    }
+    if (!args.query) {
+      throw new Error("'query' is required when 'filePath' is not provided.");
+    }
     let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
       threshold: args.fuzzyThreshold,
       limit: args.limit,

@@ -1,7 +1,7 @@
 {
   "name": "opencode-history-search",
-  "version": "1.1.0",
-  "description": "Search through OpenCode conversation history with keyword, regex, and fuzzy search support",
+  "version": "1.2.0",
+  "description": "Search OpenCode conversation history and trace which prompts touched specific files",
   "main": "dist/history-search.ts",
   "module": "src/index.ts",
   "type": "module",
@@ -10,8 +10,8 @@
   },
   "scripts": {
     "install:tool": "bun run install.ts",
-    "test": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts",
-    "test:unit": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts",
+    "test": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts",
+    "test:unit": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts",
     "test:integration": "bun test src/**/*.integration.test.ts test/date-filter-integration.test.ts",
     "test:all": "bun run test:unit && bun run test:integration",
     "build": "bun run build.ts",

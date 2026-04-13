@@ -169,7 +169,7 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
   },
 });
 
-const server = async (_input: unknown, _options?: unknown) => ({
+const server = async (_input?: unknown, _options?: unknown) => ({
   tool: { "history-search": historySearch },
 });
 

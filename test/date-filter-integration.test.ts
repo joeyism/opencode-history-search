@@ -1,8 +1,10 @@
 import { describe, test, expect } from "bun:test";
-import tool from "../src/index";
+import plugin from "../src/index";
 import type { ToolContext } from "@opencode-ai/plugin";
 
 const MAIN_PROJECT_ID = "4b0ea68d7af9a6031a7ffda7ad66e0cb83315750";
+
+const tool = (await plugin.server(undefined)).tool["history-search"];
 
 const mockContext: ToolContext = {
   sessionID: "test-session",

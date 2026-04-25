@@ -23,7 +23,22 @@ Search through your OpenCode conversation history with keyword, regex, and fuzzy
 
 ## Installation
 
-### Quick Install (Recommended)
+### OpenCode Install (Recommended)
+
+Add to your OpenCode config (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-history-search"
+  ]
+}
+```
+
+Then restart OpenCode.
+
+### Quick Install
 
 ```bash
 # Using npx (npm)

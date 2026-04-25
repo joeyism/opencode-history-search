@@ -1,20 +1,4 @@
 // @bun
-var __create = Object.create;
-var __getProtoOf = Object.getPrototypeOf;
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __toESM = (mod, isNodeMode, target) => {
-  target = mod != null ? __create(__getProtoOf(mod)) : {};
-  const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-  for (let key of __getOwnPropNames(mod))
-    if (!__hasOwnProp.call(to, key))
-      __defProp(to, key, {
-        get: () => mod[key],
-        enumerable: true
-      });
-  return to;
-};
 var __require = import.meta.require;
 
 // src/index.ts
@@ -1988,7 +1972,7 @@ function formatTraceResults(matches) {
   return lines.join(`
 `);
 }
-var src_default = tool({
+var historySearch = tool({
   description: `Search through past conversation histories in the current repository. 
 Searches session titles, message content, tool invocations, and file paths.
 Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
@@ -2039,6 +2023,10 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
     return formatResults(matches);
   }
 });
+var server = async (_input, _options) => ({
+  tool: { "history-search": historySearch }
+});
+var src_default = { id: "opencode-history-search", server };
 export {
   src_default as default
 };

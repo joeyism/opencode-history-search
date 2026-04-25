@@ -66,7 +66,7 @@ function formatTraceResults(matches: FileTraceResult[]): string {
   return lines.join("\n");
 }
 
-export default tool({
+const historySearch = tool({
   description: `Search through past conversation histories in the current repository. 
 Searches session titles, message content, tool invocations, and file paths.
 Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
@@ -168,3 +168,9 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
     return formatResults(matches);
   },
 });
+
+const server = async (_input?: unknown, _options?: unknown) => ({
+  tool: { "history-search": historySearch },
+});
+
+export default { id: "opencode-history-search", server };

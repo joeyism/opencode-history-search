@@ -1,6 +1,6 @@
 {
   "name": "opencode-history-search",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Search OpenCode conversation history and trace which prompts touched specific files",
   "main": "dist/history-search.ts",
   "module": "dist/history-search.ts",

@@ -5,7 +5,7 @@
 [![Tests](https://github.com/joeyism/opencode-history-search/workflows/Tests/badge.svg)](https://github.com/joeyism/opencode-history-search/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Search through your OpenCode conversation history with keyword, regex, and fuzzy search.
+Search through your OpenCode conversation history across ALL projects or within the current repository. Supports keyword, regex, fuzzy, and global search.
 
 <video src="https://github.com/user-attachments/assets/f492da67-3f54-4989-abb3-2d40c3a8fe7c" autoplay loop muted playsinline width="100%"></video>
 
@@ -18,12 +18,14 @@ Search through your OpenCode conversation history with keyword, regex, and fuzzy
 - **Role Filtering** - Search only your messages (`user`) or only AI responses (`assistant`)
 - **File Modification Tracking** - Find which sessions modified specific files
 - **Multiple Match Types** - Search across session titles, messages, tool invocations, and file paths
+- **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
+- **Project-Aware Results** - See which project directory each result came from
 - **Fast** - Queries complete in < 50ms even with thousands of messages
 - **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
 
 ## Installation
 
-### OpenCode Install (Recommended)
+### OpenCode Config (Recommended)
 
 Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
@@ -66,6 +68,14 @@ bun run install:tool
 ## Use Cases
 
 Things you can ask OpenCode once this tool is installed:
+
+### Find something you worked on but forgot which project
+
+> "Search across all my projects for conversations about auth code"
+
+> "Find sessions globally where you wrote a database migration"
+
+> "Which project did we discuss the rate limiting implementation?"
 
 ### Find sessions where a file was created or modified
 
@@ -119,6 +129,7 @@ Things you can ask OpenCode once this tool is installed:
 
 | Parameter        | Type                      | Default     | Description                                            |
 | ---------------- | ------------------------- | ----------- | ------------------------------------------------------ |
+| `searchAllProjects` | boolean                   | `false`     | Search ALL projects on this machine (set to `true` for global search) |
 | `query`          | string                    | _required_  | Search query (keyword, regex, or fuzzy term)           |
 | `mode`           | `"keyword"` \| `"fuzzy"`  | `"keyword"` | Search mode                                            |
 | `regex`          | boolean                   | `false`     | Treat query as regex (keyword mode only)               |
@@ -181,6 +192,7 @@ Found 3 matches in conversation history:
 
 ## Implement storage layer
 - Session ID: ses_abc123...
+- Project: /home/user/projects/my-app
 - Date: 2026-02-01 10:30:00
 - Match Type: title
 - Excerpt: "Implement storage layer"
@@ -205,7 +217,7 @@ Found 3 matches in conversation history:
 ## How It Works
 
 1. **Storage**: Auto-detects SQLite (v1.2+) or JSON files (v1.1.x) — SQLite preferred when present
-2. **Project Scoping**: Uses git root commit hash to scope searches to current repository
+2. **Project Scoping**: By default, scopes searches to current repository via git root commit hash. Set `searchAllProjects: true` to search across all projects.
 3. **Indexing**: For fuzzy search, builds a searchable index of all content
 4. **Matching**: Applies chosen search algorithm (keyword, regex, or fuzzy)
 5. **Sorting**: Returns results sorted by timestamp (newest first)
@@ -247,6 +259,7 @@ bun run build
 ```
 src/
 ├── index.ts                  # Tool definition & main entry
+├── format.ts                 # Output formatting
 ├── storage.ts                # JSON storage backend (v1.1.x)
 ├── storage-sqlite.ts         # SQLite storage backend (v1.2+)
 ├── storage-provider.ts       # Auto-detects backend, unified API

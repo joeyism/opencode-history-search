@@ -4,7 +4,19 @@ import { existsSync, mkdirSync, copyFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const TOOL_DESCRIPTION = `Search through past conversation histories in the current repository.
+const TOOL_DESCRIPTION = `Search through past conversation histories.
+
+Parameters:
+- query: Search term (keyword, regex, or fuzzy). Required unless filePath provided.
+- searchAllProjects: boolean — set to true to search ALL projects on this machine. Default: false (current repo only).
+- filePath: Trace which sessions modified a specific file path.
+- mode: "keyword" (default) or "fuzzy" search.
+- regex: Treat query as regex pattern (keyword mode only).
+- caseSensitive: Case-sensitive search (keyword mode only).
+- fuzzyThreshold: Fuzzy match strictness 0.0-1.0 (default 0.4).
+- date: Filter by date (e.g., "today", "last 7 days", "YYYY-MM-DD", "YYYY-MM-DD to YYYY-MM-DD").
+- limit: Maximum number of results (default: 50).
+- role: Filter by "user" or "assistant" messages.
 
 Searches:
 - Session titles
@@ -13,27 +25,14 @@ Searches:
 - File paths mentioned or edited
 - Files modified in patch parts (find which sessions changed a file)
 
-Features:
-- Keyword search (exact matches)
-- Regex search (advanced patterns)
-- Fuzzy search (typo-tolerant matching)
-- Date filtering (today, last 7 days, date ranges)
-- Role filtering (search only your messages or AI responses)
-- File modification tracking (find which sessions edited a file)
-- Case-sensitive option
-- Configurable result limit (default: 50)
-- Fuzzy threshold control (strictness)
-- Results sorted by most recent first
-- Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
-
 Examples:
-- "Search my history for 'ripgrep'"
-- "Search history for 'storage.*\\.ts' with regex"
-- "Search history for 'storag' using fuzzy mode" (finds "storage")
-- "Find conversations about authentication"
-- "Search for 'grap' with fuzzy search" (finds "grep")
-- "Search only my messages for 'storage'" (role: user)
-- "Which sessions modified src/storage.ts?" (file modification search)`;
+- "Search across all my projects for auth code" (uses searchAllProjects: true)
+- "Search my history for 'storage' in this repo" (uses searchAllProjects: false, default)
+- "Search for 'storag' using fuzzy mode" (uses mode: "fuzzy")
+- "Find conversations about authentication globally" (uses searchAllProjects: true)
+- "Which sessions modified src/storage.ts?" (uses filePath)
+
+Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files).`;
 
 function getOpenCodeToolDir(): string {
   const home = homedir();

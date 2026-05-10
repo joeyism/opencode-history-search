@@ -22,17 +22,29 @@ function openDb(): Database {
 }
 
 export async function* listSessionsSqlite(
-  projectID: string,
+  projectID: string | null,
+  db?: Database,
 ): AsyncGenerator<Session> {
-  const db = openDb();
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db
-      .query(
-        `SELECT id, project_id, title, directory, time_created, time_updated
-         FROM session WHERE project_id = ?
-         ORDER BY time_updated DESC`,
-      )
-      .all(projectID) as Array<{
+    const rows = (
+      projectID
+        ? _db
+            .query(
+              `SELECT id, project_id, title, directory, time_created, time_updated
+               FROM session WHERE project_id = ?
+               ORDER BY time_updated DESC`,
+            )
+            .all(projectID)
+        : _db
+            .query(
+              `SELECT id, project_id, title, directory, time_created, time_updated
+               FROM session
+               ORDER BY time_updated DESC`,
+            )
+            .all()
+    ) as Array<{
       id: string;
       project_id: string;
       title: string;
@@ -51,7 +63,7 @@ export async function* listSessionsSqlite(
       };
     }
   } finally {
-    db.close();
+    if (shouldClose) _db.close();
   }
 }
 

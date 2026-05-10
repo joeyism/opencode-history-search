@@ -10,10 +10,11 @@ export interface SearchMatch {
   context: string;
   messageID?: string;
   partID?: string;
+  projectDirectory: string;
 }
 
 export async function searchKeyword(
-  projectID: string,
+  projectID: string | null,
   query: string,
   options: {
     regex?: boolean;
@@ -43,6 +44,7 @@ export async function searchKeyword(
         matchType: "title",
         excerpt: session.title,
         context: session.title,
+        projectDirectory: session.directory,
       });
       if (results.length >= limit) break;
     }
@@ -72,6 +74,7 @@ export async function searchKeyword(
             context: context,
             messageID: message.id,
             partID: part.id,
+            projectDirectory: session.directory,
           });
           if (results.length >= limit) break;
         }
@@ -87,6 +90,7 @@ export async function searchKeyword(
             context: part.state?.title || part.tool,
             messageID: message.id,
             partID: part.id,
+            projectDirectory: session.directory,
           });
           if (results.length >= limit) break;
         }
@@ -108,6 +112,7 @@ export async function searchKeyword(
                 context: part.state.title || part.tool || "",
                 messageID: message.id,
                 partID: part.id,
+                projectDirectory: session.directory,
               });
               if (results.length >= limit) break;
             }
@@ -128,6 +133,7 @@ export async function searchKeyword(
                 context: `Modified file: ${filePath}`,
                 messageID: message.id,
                 partID: part.id,
+                projectDirectory: session.directory,
               });
             }
           }

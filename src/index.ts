@@ -1,76 +1,13 @@
 import { tool } from "@opencode-ai/plugin";
 import { getCurrentProjectID } from "./storage-provider";
-import { searchKeyword, type SearchMatch } from "./search/keyword";
+import { searchKeyword } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
 import { parseDateFilter, filterByDate } from "./search/date-filter";
-import { traceFile, type FileTraceResult } from "./search/file-trace";
-
-function formatResults(matches: SearchMatch[]): string {
-  if (matches.length === 0) {
-    return "No matches found in conversation history.";
-  }
-
-  const lines: string[] = [
-    `Found ${matches.length} matches in conversation history:\n`,
-  ];
-
-  for (const match of matches) {
-    const date = new Date(match.timestamp).toISOString().split("T")[0];
-    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
-
-    lines.push(`## ${match.sessionTitle}`);
-    lines.push(`- Session ID: ${match.sessionID}`);
-    lines.push(`- Date: ${date} ${time}`);
-    lines.push(`- Match Type: ${match.matchType}`);
-    lines.push(`- Excerpt: "${match.excerpt}"`);
-
-    if (match.context && match.context !== match.excerpt) {
-      lines.push(`- Context: ...${match.context}...`);
-    }
-
-    lines.push("");
-  }
-
-  return lines.join("\n");
-}
-
-function formatTraceResults(matches: FileTraceResult[]): string {
-  if (matches.length === 0) {
-    return "No file trace matches found in conversation history.";
-  }
-
-  const lines: string[] = [
-    `Found ${matches.length} file trace matches in conversation history:\n`,
-  ];
-
-  for (const match of matches) {
-    const date = new Date(match.timestamp).toISOString().split("T")[0];
-    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
-
-    lines.push(`## ${match.sessionTitle}`);
-    lines.push(`- Session ID: ${match.sessionID}`);
-    lines.push(`- Date: ${date} ${time}`);
-    lines.push(`- Status: ${match.firstTouch ? "First seen" : "Later touch"}`);
-    lines.push(`- File: ${match.filePath}`);
-    if (match.toolName) {
-      lines.push(`- Tool: ${match.toolName}`);
-    }
-    
-    if (match.userPrompt) {
-      lines.push(`- Preceding User Prompt: "${match.userPrompt}"`);
-    }
-
-    lines.push("");
-  }
-
-  return lines.join("\n");
-}
+import { traceFile } from "./search/file-trace";
+import { formatResults, formatTraceResults } from "./format";
 
 const historySearch = tool({
-  description: `Search through past conversation histories in the current repository. 
-Searches session titles, message content, tool invocations, and file paths.
-Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
-Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
+  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
 
   args: {
     query: tool.schema
@@ -81,6 +18,12 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
       .string()
       .optional()
       .describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
+    searchAllProjects: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set to true to search ALL projects on your machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere.",
+      ),
     mode: tool.schema
       .enum(["keyword", "fuzzy"])
       .optional()
@@ -126,7 +69,7 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
       throw new Error("Either 'query' or 'filePath' must be provided.");
     }
 
-    const projectID = await getCurrentProjectID();
+    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
 
     if (args.filePath) {
       let matches = await traceFile(projectID, args.filePath, {
@@ -168,9 +111,9 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
     return formatResults(matches);
   },
 });
-
-const server = async (_input?: unknown, _options?: unknown) => ({
+(historySearch as any).id = "opencode-history-search";
+(historySearch as any).server = async (_input?: unknown, _options?: unknown) => ({
   tool: { "history-search": historySearch },
 });
 
-export default { id: "opencode-history-search", server };
+export default historySearch;

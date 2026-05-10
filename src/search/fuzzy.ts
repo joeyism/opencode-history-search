@@ -13,7 +13,7 @@ interface SearchableItem {
 }
 
 export async function searchFuzzy(
-  projectID: string,
+  projectID: string | null,
   query: string,
   options: {
     threshold?: number; // 0.0 = exact, 1.0 = anything (default: 0.4)
@@ -151,6 +151,7 @@ export async function searchFuzzy(
         context: context || excerpt,
         messageID: result.item.messageID,
         partID: result.item.partID,
+        projectDirectory: result.item.session.directory,
       };
     })
     .sort((a, b) => b.timestamp - a.timestamp);

@@ -99,4 +99,27 @@ describe("fuzzy search (unit tests with mocks)", () => {
     expect(results).toBeDefined();
     expect(Array.isArray(results)).toBe(true);
   });
+
+  describe("global search (projectID = null)", () => {
+    test("returns results from all projects", async () => {
+      const results = await searchFuzzy(null, "storag", { threshold: 0.4, limit: 10 });
+      expect(results.length).toBeGreaterThan(0);
+    });
+
+    test("results include projectDirectory field", async () => {
+      const results = await searchFuzzy(null, "storag", { threshold: 0.4, limit: 5 });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]).toHaveProperty("projectDirectory");
+    });
+
+    test("respects limit across multiple projects", async () => {
+      const results = await searchFuzzy(null, "the", { threshold: 0.5, limit: 2 });
+      expect(results.length).toBeLessThanOrEqual(2);
+    });
+
+    test("returns empty array for no matches", async () => {
+      const results = await searchFuzzy(null, "qwertyuiop", { threshold: 0.1, limit: 5 });
+      expect(results.length).toBe(0);
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import path from "path";
 import os from "os";
+import fs from "fs";
 import { Glob } from "bun";
 
 export interface Session {
@@ -50,22 +51,57 @@ export async function getCurrentProjectID(): Promise<string> {
 }
 
 export async function* listSessions(
-  projectID: string,
+  projectID: string | null,
 ): AsyncGenerator<Session> {
   const storageDir = await getStorageDir();
-  const sessionDir = path.join(storageDir, "session", projectID);
+  const sessionDir = path.join(storageDir, "session");
 
-  try {
-    for await (const file of new Glob("*.json").scan({ cwd: sessionDir })) {
-      try {
-        const content = await Bun.file(path.join(sessionDir, file)).json();
-        yield content as Session;
-      } catch {
-        continue;
+  if (projectID !== null) {
+    const projectDir = path.join(sessionDir, projectID);
+    try {
+      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
+        try {
+          const content = await Bun.file(path.join(projectDir, file)).json();
+          yield content as Session;
+        } catch {
+          continue;
+        }
       }
+    } catch {
+      return;
     }
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(sessionDir);
   } catch {
     return;
+  }
+
+  for (const entry of entries) {
+    const projectDir = path.join(sessionDir, entry);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(projectDir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+
+    try {
+      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
+        try {
+          const content = await Bun.file(path.join(projectDir, file)).json();
+          yield content as Session;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      continue;
+    }
   }
 }
 

@@ -247,4 +247,45 @@ describe("file-trace search", () => {
       expect(results.map((r) => r.sessionID)).toEqual(["ses_d", "ses_b", "ses_a"]);
     });
   });
+
+  describe("Group 7: global scoping (projectID = null)", () => {
+    test("traces across all projects", () => {
+      const results = traceFileSqlite(db, null, "src/auth.ts");
+      const ids = results.map((r) => r.sessionID);
+      expect(ids).toContain("ses_e");
+      expect(ids).toContain("ses_d");
+      expect(ids).toContain("ses_b");
+      expect(ids).toContain("ses_a");
+    });
+
+    test("respects limit", () => {
+      const results = traceFileSqlite(db, null, "src/auth.ts", { limit: 2 });
+      expect(results).toHaveLength(2);
+    });
+
+    test("returns empty for unknown file", () => {
+      const results = traceFileSqlite(db, null, "src/unknown.ts");
+      expect(results).toHaveLength(0);
+    });
+
+    test("deduplicates correctly across projects", () => {
+      const results = traceFileSqlite(db, null, "src/auth.ts");
+      const keys = results.map((r) => `${r.sessionID}|${r.filePath}`);
+      const uniqueKeys = new Set(keys);
+      expect(keys.length).toBe(uniqueKeys.size);
+    });
+
+    test("firstTouch is chronologically earliest across all projects", () => {
+      const results = traceFileSqlite(db, null, "src/auth.ts");
+      const firstTouch = results.find((r) => r.firstTouch);
+      expect(firstTouch).toBeDefined();
+      expect(firstTouch?.sessionID).toBe("ses_a");
+    });
+
+    test("user prompts resolve correctly for each project", () => {
+      const results = traceFileSqlite(db, null, "src/auth.ts");
+      const sesE = results.find((r) => r.sessionID === "ses_e");
+      expect(sesE?.userPrompt).toBe("touch auth in other project");
+    });
+  });
 });

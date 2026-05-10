@@ -44,6 +44,7 @@ export async function searchKeyword(
         matchType: "title",
         excerpt: session.title,
         context: session.title,
+        projectDirectory: session.directory,
       });
       if (results.length >= limit) break;
     }

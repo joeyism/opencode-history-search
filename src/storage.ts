@@ -82,7 +82,7 @@ export async function* listSessions(
 
   for (const entry of entries) {
     const projectDir = path.join(sessionDir, entry);
-    let stat: fs.FileStats;
+    let stat: fs.Stats;
     try {
       stat = fs.statSync(projectDir);
     } catch {

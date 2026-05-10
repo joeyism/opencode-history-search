@@ -111,9 +111,8 @@ const historySearch = tool({
     return formatResults(matches);
   },
 });
-// @ts-ignore — dual interface: tool (for ~/.opencode/tool/) + plugin (for npm config)
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input?: unknown, _options?: unknown) => ({
+(historySearch as any).id = "opencode-history-search";
+(historySearch as any).server = async (_input?: unknown, _options?: unknown) => ({
   tool: { "history-search": historySearch },
 });
 

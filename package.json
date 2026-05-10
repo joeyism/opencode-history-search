@@ -1,6 +1,6 @@
 {
   "name": "opencode-history-search",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Search OpenCode conversation history across all projects or current repo — trace which prompts touched specific files",
   "main": "dist/history-search.ts",
   "module": "dist/history-search.ts",

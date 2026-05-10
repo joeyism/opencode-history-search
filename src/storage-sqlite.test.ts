@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
+import type { Session } from "./storage";
 
 describe("SQLite storage schema compatibility", () => {
   let db: Database;
@@ -93,6 +94,54 @@ describe("SQLite storage schema compatibility", () => {
     const rows = db.query("SELECT data FROM part WHERE id = ?").all("part_004") as Array<{ data: string }>;
     const data = JSON.parse(rows[0]!.data);
     expect(data.type).toBe("reasoning");
-    // Our code would skip this — not in the "text" | "tool" | "file" | "patch" set
+  });
+
+  describe("global listing (projectID = null)", () => {
+    test("listSessionsSqlite(null) returns sessions from all projects", async () => {
+      const { listSessionsSqlite } = await import("./storage-sqlite");
+      const sessions: Session[] = [];
+      for await (const session of listSessionsSqlite(null, db)) {
+        sessions.push(session);
+      }
+      expect(sessions.length).toBe(1);
+      expect(sessions[0]?.id).toBe("ses_001");
+    });
+
+    test("listSessionsSqlite(null) returns empty array when no sessions exist", async () => {
+      const { listSessionsSqlite } = await import("./storage-sqlite");
+      const emptyDb = new Database(":memory:");
+      emptyDb.run(`CREATE TABLE session (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL,
+        directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
+        time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+      )`);
+      const sessions: Session[] = [];
+      for await (const session of listSessionsSqlite(null, emptyDb)) {
+        sessions.push(session);
+      }
+      expect(sessions.length).toBe(0);
+      emptyDb.close();
+    });
+
+    test("listSessionsSqlite('proj1') still returns scoped results", async () => {
+      const { listSessionsSqlite } = await import("./storage-sqlite");
+      const sessions: Session[] = [];
+      for await (const session of listSessionsSqlite("proj1", db)) {
+        sessions.push(session);
+      }
+      expect(sessions.length).toBe(1);
+      expect(sessions[0]?.id).toBe("ses_001");
+    });
+
+    test("listSessionsSqlite(null) results are sorted by time_updated DESC", async () => {
+      const { listSessionsSqlite } = await import("./storage-sqlite");
+      const sessions: Session[] = [];
+      for await (const session of listSessionsSqlite(null, db)) {
+        sessions.push(session);
+      }
+      for (let i = 0; i < sessions.length - 1; i++) {
+        expect(sessions[i]!.time.updated).toBeGreaterThanOrEqual(sessions[i + 1]!.time.updated);
+      }
+    });
   });
 });

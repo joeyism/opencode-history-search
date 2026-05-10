@@ -1,28 +1,52 @@
 import type { Session, Message, Part } from "../../src/storage";
 
 export const MOCK_PROJECT_ID = "mock-project-123";
+export const MOCK_PROJECT_ID_2 = "mock-project-789";
+export const MOCK_PROJECT_DIR = "/mock/project";
+export const MOCK_PROJECT_DIR_2 = "/mock/other-project";
 
 export const mockSessions: Session[] = [
   {
     id: "ses_001",
     projectID: MOCK_PROJECT_ID,
     title: "Implement storage layer",
-    directory: "/mock/project",
+    directory: MOCK_PROJECT_DIR,
     time: { created: 1706745600000, updated: 1706745600000 },
   },
   {
     id: "ses_002",
     projectID: MOCK_PROJECT_ID,
     title: "Fix authentication bug",
-    directory: "/mock/project",
+    directory: MOCK_PROJECT_DIR,
     time: { created: 1706659200000, updated: 1706659200000 },
   },
   {
     id: "ses_003",
     projectID: MOCK_PROJECT_ID,
     title: "Add fuzzy search feature",
-    directory: "/mock/project",
+    directory: MOCK_PROJECT_DIR,
     time: { created: 1706572800000, updated: 1706572800000 },
+  },
+  {
+    id: "ses_004",
+    projectID: MOCK_PROJECT_ID_2,
+    title: "Refactor database connection pool",
+    directory: MOCK_PROJECT_DIR_2,
+    time: { created: 1706832000000, updated: 1706832000000 },
+  },
+  {
+    id: "ses_005",
+    projectID: MOCK_PROJECT_ID_2,
+    title: "Implement caching layer",
+    directory: MOCK_PROJECT_DIR_2,
+    time: { created: 1706572800000, updated: 1706572800000 },
+  },
+  {
+    id: "ses_006",
+    projectID: MOCK_PROJECT_ID_2,
+    title: "Fix memory leak in worker thread",
+    directory: MOCK_PROJECT_DIR_2,
+    time: { created: 1707004800000, updated: 1707004800000 },
   },
 ];
 
@@ -59,6 +83,40 @@ export const mockMessages: Record<string, Message[]> = {
       role: "user",
       agent: "user",
       time: { created: 1706572800000 },
+    },
+  ],
+  ses_004: [
+    {
+      id: "msg_005",
+      sessionID: "ses_004",
+      role: "user",
+      agent: "user",
+      time: { created: 1706832000000 },
+    },
+    {
+      id: "msg_006",
+      sessionID: "ses_004",
+      role: "assistant",
+      agent: "build",
+      time: { created: 1706832001000 },
+    },
+  ],
+  ses_005: [
+    {
+      id: "msg_007",
+      sessionID: "ses_005",
+      role: "user",
+      agent: "user",
+      time: { created: 1706572800000 },
+    },
+  ],
+  ses_006: [
+    {
+      id: "msg_008",
+      sessionID: "ses_006",
+      role: "user",
+      agent: "user",
+      time: { created: 1707004800000 },
     },
   ],
 };
@@ -119,14 +177,75 @@ export const mockParts: Record<string, Part[]> = {
       text: "I need fuzzy search functionality for the search bar",
     },
   ],
+  msg_005: [
+    {
+      id: "part_007",
+      messageID: "msg_005",
+      sessionID: "ses_004",
+      type: "text",
+      text: "We need to implement a database connection pool for the API server",
+    },
+  ],
+  msg_006: [
+    {
+      id: "part_008",
+      messageID: "msg_006",
+      sessionID: "ses_004",
+      type: "text",
+      text: "I'll create a connection pool module with pooling and health checks.",
+    },
+    {
+      id: "part_009",
+      messageID: "msg_006",
+      sessionID: "ses_004",
+      type: "tool",
+      tool: "write",
+      state: {
+        input: { filePath: "src/db/pool.ts" },
+        output: "Created src/db/pool.ts",
+        title: "Write connection pool",
+      },
+    },
+    {
+      id: "part_010",
+      messageID: "msg_006",
+      sessionID: "ses_004",
+      type: "patch",
+      files: ["src/db/pool.ts", "src/db/index.ts"],
+    },
+  ],
+  msg_007: [
+    {
+      id: "part_011",
+      messageID: "msg_007",
+      sessionID: "ses_005",
+      type: "text",
+      text: "Add Redis caching layer in front of the database",
+    },
+  ],
+  msg_008: [
+    {
+      id: "part_012",
+      messageID: "msg_008",
+      sessionID: "ses_006",
+      type: "text",
+      text: "The worker thread is leaking memory after about 100 requests",
+    },
+  ],
 };
 
 export async function* mockListSessions(
-  projectID: string,
+  projectID: string | null,
 ): AsyncGenerator<Session> {
-  if (projectID === MOCK_PROJECT_ID) {
+  if (projectID === null) {
     for (const session of mockSessions) {
       yield session;
+    }
+  } else if (projectID === MOCK_PROJECT_ID || projectID === MOCK_PROJECT_ID_2) {
+    for (const session of mockSessions) {
+      if (session.projectID === projectID) {
+        yield session;
+      }
     }
   }
 }

@@ -22,12 +22,15 @@ function dbExists() {
 function openDb() {
   return new Database(getDbPath(), { readonly: true });
 }
-async function* listSessionsSqlite(projectID) {
-  const db = openDb();
+async function* listSessionsSqlite(projectID, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, project_id, title, directory, time_created, time_updated
-         FROM session WHERE project_id = ?
-         ORDER BY time_updated DESC`).all(projectID);
+    const rows = projectID ? _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
+               FROM session WHERE project_id = ?
+               ORDER BY time_updated DESC`).all(projectID) : _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
+               FROM session
+               ORDER BY time_updated DESC`).all();
     for (const row of rows) {
       yield {
         id: row.id,
@@ -38,7 +41,8 @@ async function* listSessionsSqlite(projectID) {
       };
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
 async function* listMessagesSqlite(sessionID, role) {
@@ -98,6 +102,7 @@ async function* listPartsSqlite(messageID) {
 // src/storage.ts
 import path2 from "path";
 import os2 from "os";
+import fs from "fs";
 var {Glob } = globalThis.Bun;
 async function getStorageDir() {
   const xdgData = process.env.XDG_DATA_HOME || path2.join(os2.homedir(), ".local", "share");
@@ -115,18 +120,51 @@ async function getCurrentProjectID() {
 }
 async function* listSessions(projectID) {
   const storageDir = await getStorageDir();
-  const sessionDir = path2.join(storageDir, "session", projectID);
-  try {
-    for await (const file of new Glob("*.json").scan({ cwd: sessionDir })) {
-      try {
-        const content = await Bun.file(path2.join(sessionDir, file)).json();
-        yield content;
-      } catch {
-        continue;
+  const sessionDir = path2.join(storageDir, "session");
+  if (projectID !== null) {
+    const projectDir = path2.join(sessionDir, projectID);
+    try {
+      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
+        try {
+          const content = await Bun.file(path2.join(projectDir, file)).json();
+          yield content;
+        } catch {
+          continue;
+        }
       }
+    } catch {
+      return;
     }
+    return;
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(sessionDir);
   } catch {
     return;
+  }
+  for (const entry of entries) {
+    const projectDir = path2.join(sessionDir, entry);
+    let stat;
+    try {
+      stat = fs.statSync(projectDir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory())
+      continue;
+    try {
+      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
+        try {
+          const content = await Bun.file(path2.join(projectDir, file)).json();
+          yield content;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      continue;
+    }
   }
 }
 async function* listMessages(sessionID, role) {
@@ -228,7 +266,8 @@ async function searchKeyword(projectID, query, options = {}) {
             excerpt: match ? match[0] : query,
             context,
             messageID: message.id,
-            partID: part.id
+            partID: part.id,
+            projectDirectory: session.directory
           });
           if (results.length >= limit)
             break;
@@ -244,7 +283,8 @@ async function searchKeyword(projectID, query, options = {}) {
             excerpt: part.tool,
             context: part.state?.title || part.tool,
             messageID: message.id,
-            partID: part.id
+            partID: part.id,
+            projectDirectory: session.directory
           });
           if (results.length >= limit)
             break;
@@ -265,7 +305,8 @@ async function searchKeyword(projectID, query, options = {}) {
                 excerpt: matched[0],
                 context: part.state.title || part.tool || "",
                 messageID: message.id,
-                partID: part.id
+                partID: part.id,
+                projectDirectory: session.directory
               });
               if (results.length >= limit)
                 break;
@@ -285,7 +326,8 @@ async function searchKeyword(projectID, query, options = {}) {
                 excerpt: filePath,
                 context: `Modified file: ${filePath}`,
                 messageID: message.id,
-                partID: part.id
+                partID: part.id,
+                projectDirectory: session.directory
               });
             }
           }
@@ -1695,7 +1737,8 @@ async function searchFuzzy(projectID, query, options = {}) {
       excerpt: excerpt || query,
       context: context || excerpt,
       messageID: result.item.messageID,
-      partID: result.item.partID
+      partID: result.item.partID,
+      projectDirectory: result.item.session.directory
     };
   }).sort((a, b) => b.timestamp - a.timestamp);
 }
@@ -1783,6 +1826,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
   const normalizedQuery = queryPath.replace(/\\/g, "/");
   const isExactPath = normalizedQuery.includes("/");
   const likePattern = `%${normalizedQuery}%`;
+  const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
   const sql = `
     SELECT
       s.id AS session_id,
@@ -1796,12 +1840,12 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     FROM session s
     JOIN message m ON m.session_id = s.id
     JOIN part p ON p.message_id = m.id
-    WHERE s.project_id = ?
-      AND json_valid(p.data)
+    WHERE json_valid(p.data)
       AND json_extract(m.data, '$.role') = 'assistant'
       AND json_extract(p.data, '$.type') = 'tool'
       AND json_extract(p.data, '$.tool') IN ('write', 'edit')
       AND json_extract(p.data, '$.state.input.filePath') LIKE ?
+      ${projectFilter}
       
     UNION ALL
 
@@ -1812,19 +1856,20 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       m.time_created AS message_time,
       NULL AS tool_name,
       NULL AS matched_file_path_tool,
-      p.data AS matched_files_patch, -- using whole data to parse files in TS since sqlite json_each might be tricky with versions
+      p.data AS matched_files_patch,
       1 AS source_priority
     FROM session s
     JOIN message m ON m.session_id = s.id
     JOIN part p ON p.message_id = m.id
-    WHERE s.project_id = ?
-      AND json_valid(p.data)
+    WHERE json_valid(p.data)
       AND json_extract(m.data, '$.role') = 'assistant'
       AND json_extract(p.data, '$.type') = 'patch'
       AND json_extract(p.data, '$.files') LIKE ?
+      ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;
-  const rows = db.query(sql).all(projectID, likePattern, projectID, likePattern);
+  const binds = projectID !== null ? [likePattern, projectID, likePattern, projectID] : [likePattern, likePattern];
+  const rows = db.query(sql).all(...binds);
   const candidates = [];
   for (const row of rows) {
     let matchedPath = null;
@@ -1920,7 +1965,7 @@ async function traceFile(projectID, filePath, options) {
   }
 }
 
-// src/index.ts
+// src/format.ts
 function formatResults(matches) {
   if (matches.length === 0) {
     return "No matches found in conversation history.";
@@ -1934,6 +1979,7 @@ function formatResults(matches) {
     const time = new Date(match.timestamp).toTimeString().split(" ")[0];
     lines.push(`## ${match.sessionTitle}`);
     lines.push(`- Session ID: ${match.sessionID}`);
+    lines.push(`- Project: ${match.projectDirectory}`);
     lines.push(`- Date: ${date} ${time}`);
     lines.push(`- Match Type: ${match.matchType}`);
     lines.push(`- Excerpt: "${match.excerpt}"`);
@@ -1972,14 +2018,14 @@ function formatTraceResults(matches) {
   return lines.join(`
 `);
 }
+
+// src/index.ts
 var historySearch = tool({
-  description: `Search through past conversation histories in the current repository. 
-Searches session titles, message content, tool invocations, and file paths.
-Also supports tracing a specific file to see when it was first seen/touched and what user prompt triggered each touch.
-Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
+  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
   args: {
     query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
     filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
+    searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on your machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
     mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
     regex: tool.schema.boolean().optional().describe("Treat query as regex pattern (keyword mode only, default: false)"),
     caseSensitive: tool.schema.boolean().optional().describe("Case-sensitive search (keyword mode only, default: false)"),
@@ -1992,7 +2038,7 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
     if (!args.query && !args.filePath) {
       throw new Error("Either 'query' or 'filePath' must be provided.");
     }
-    const projectID = await getCurrentProjectID();
+    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
     if (args.filePath) {
       let matches2 = await traceFile(projectID, args.filePath, {
         limit: args.limit
@@ -2023,10 +2069,11 @@ Supports keyword search, regex patterns, fuzzy search (for typos and variations)
     return formatResults(matches);
   }
 });
-var server = async (_input, _options) => ({
+historySearch.id = "opencode-history-search";
+historySearch.server = async (_input, _options) => ({
   tool: { "history-search": historySearch }
 });
-var src_default = { id: "opencode-history-search", server };
+var src_default = historySearch;
 export {
   src_default as default
 };

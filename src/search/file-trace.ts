@@ -17,7 +17,7 @@ export interface TraceFileOptions {
 
 export function traceFileSqlite(
   db: Database,
-  projectID: string,
+  projectID: string | null,
   queryPath: string,
   options?: TraceFileOptions
 ): FileTraceResult[] {
@@ -26,6 +26,8 @@ export function traceFileSqlite(
 
   // Use broad SQL LIKE matching, then refine to exact/basename rules in TypeScript.
   const likePattern = `%${normalizedQuery}%`;
+
+  const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
 
   const sql = `
     SELECT
@@ -40,12 +42,12 @@ export function traceFileSqlite(
     FROM session s
     JOIN message m ON m.session_id = s.id
     JOIN part p ON p.message_id = m.id
-    WHERE s.project_id = ?
-      AND json_valid(p.data)
+    WHERE json_valid(p.data)
       AND json_extract(m.data, '$.role') = 'assistant'
       AND json_extract(p.data, '$.type') = 'tool'
       AND json_extract(p.data, '$.tool') IN ('write', 'edit')
       AND json_extract(p.data, '$.state.input.filePath') LIKE ?
+      ${projectFilter}
       
     UNION ALL
 
@@ -56,20 +58,24 @@ export function traceFileSqlite(
       m.time_created AS message_time,
       NULL AS tool_name,
       NULL AS matched_file_path_tool,
-      p.data AS matched_files_patch, -- using whole data to parse files in TS since sqlite json_each might be tricky with versions
+      p.data AS matched_files_patch,
       1 AS source_priority
     FROM session s
     JOIN message m ON m.session_id = s.id
     JOIN part p ON p.message_id = m.id
-    WHERE s.project_id = ?
-      AND json_valid(p.data)
+    WHERE json_valid(p.data)
       AND json_extract(m.data, '$.role') = 'assistant'
       AND json_extract(p.data, '$.type') = 'patch'
       AND json_extract(p.data, '$.files') LIKE ?
+      ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;
 
-  const rows = db.query(sql).all(projectID, likePattern, projectID, likePattern) as Array<{
+  const binds: Array<string> = projectID !== null
+    ? [likePattern, projectID, likePattern, projectID]
+    : [likePattern, likePattern];
+
+  const rows = db.query(sql).all(...binds) as Array<{
     session_id: string;
     session_title: string;
     message_id: string;
@@ -187,7 +193,7 @@ function isMatch(path: string, query: string, isExact: boolean): boolean {
 }
 
 export async function traceFile(
-  projectID: string,
+  projectID: string | null,
   filePath: string,
   options?: TraceFileOptions
 ): Promise<FileTraceResult[]> {

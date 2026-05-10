@@ -91,4 +91,29 @@ describe("keyword search (unit tests with mocks)", () => {
     expect(fpMatch).toBeDefined();
     expect(fpMatch?.excerpt).toContain("helpers.ts");
   });
+
+  describe("global search (projectID = null)", () => {
+    test("returns results from all projects", async () => {
+      const results = await searchKeyword(null, "storage", { limit: 10 });
+      expect(results.length).toBeGreaterThan(0);
+    });
+
+    test("results include projectDirectory field", async () => {
+      const results = await searchKeyword(null, "storage", { limit: 5 });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]).toHaveProperty("projectDirectory");
+    });
+
+    test("respects limit across multiple projects", async () => {
+      const results = await searchKeyword(null, "the", { limit: 2 });
+      expect(results.length).toBeLessThanOrEqual(2);
+    });
+
+    test("returns empty array for no matches", async () => {
+      const results = await searchKeyword(null, "nonexistent-xyz-123", {
+        limit: 5,
+      });
+      expect(results.length).toBe(0);
+    });
+  });
 });

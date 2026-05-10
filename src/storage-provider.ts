@@ -16,7 +16,7 @@ import type { Session, Message, Part } from "./storage";
 const useSqlite = dbExists();
 
 export async function* listSessions(
-  projectID: string,
+  projectID: string | null,
 ): AsyncGenerator<Session> {
   if (useSqlite) {
     yield* listSessionsSqlite(projectID);

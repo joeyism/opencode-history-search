@@ -12,6 +12,7 @@ jobs:
     environment: prod
     permissions:
       id-token: write  # required for OIDC trusted publishing
+      contents: write  # required for creating GitHub releases
 
     steps:
       - uses: actions/checkout@v4
@@ -39,3 +40,10 @@ jobs:
 
       - name: Publish to npm
         run: npm publish
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            --title "${GITHUB_REF#refs/tags/}" \
+            --generate-notes \
+            ./dist/history-search.ts

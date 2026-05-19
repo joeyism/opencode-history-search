@@ -13,89 +13,130 @@ function getDbPath() {
   return path.join(xdgData, "opencode", "opencode.db");
 }
 function dbExists() {
-  try {
-    return Bun.file(getDbPath()).size > 0;
-  } catch {
-    return false;
-  }
+  return Bun.file(getDbPath()).size > 0;
 }
 function openDb() {
   return new Database(getDbPath(), { readonly: true });
+}
+async function withDb(fn) {
+  const db = openDb();
+  try {
+    return await fn(db);
+  } finally {
+    db.close();
+  }
+}
+function listSessionRowsSync(db, projectID) {
+  const rows = projectID ? db.query(`SELECT id, project_id, title, directory, time_created, time_updated
+             FROM session WHERE project_id = ?
+             ORDER BY time_updated DESC`).all(projectID) : db.query(`SELECT id, project_id, title, directory, time_created, time_updated
+             FROM session
+             ORDER BY time_updated DESC`).all();
+  return rows.map((row) => ({
+    id: row.id,
+    projectID: row.project_id,
+    title: row.title,
+    directory: row.directory,
+    time: { created: row.time_created, updated: row.time_updated }
+  }));
+}
+function listMessageRowsSync(db, sessionID, role) {
+  const rows = db.query(`SELECT id, session_id, time_created, data
+       FROM message WHERE session_id = ?
+       ORDER BY time_created ASC`).all(sessionID);
+  const out = [];
+  for (const row of rows) {
+    const data = JSON.parse(row.data);
+    if (role && data.role !== role)
+      continue;
+    out.push({
+      id: row.id,
+      sessionID: row.session_id,
+      role: data.role,
+      agent: data.agent || "",
+      time: { created: row.time_created }
+    });
+  }
+  return out;
+}
+function listPartRowsSync(db, messageID) {
+  const rows = db.query(`SELECT id, message_id, session_id, data
+       FROM part WHERE message_id = ?
+       ORDER BY time_created ASC`).all(messageID);
+  const out = [];
+  for (const row of rows) {
+    const part = decodePart(row);
+    if (part)
+      out.push(part);
+  }
+  return out;
+}
+function isSearchableType(t) {
+  return t === "text" || t === "tool" || t === "file" || t === "patch";
+}
+function decodePart(row) {
+  let parsed;
+  try {
+    parsed = JSON.parse(row.data);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null)
+    return null;
+  const raw = parsed;
+  if (!isSearchableType(raw.type))
+    return null;
+  const data = raw;
+  const part = {
+    id: row.id,
+    messageID: row.message_id,
+    sessionID: row.session_id,
+    type: data.type
+  };
+  if (data.type === "text") {
+    part.text = data.text;
+  } else if (data.type === "tool") {
+    part.tool = data.tool;
+    part.state = data.state;
+  } else if (data.type === "patch") {
+    part.files = data.files;
+  }
+  return part;
 }
 async function* listSessionsSqlite(projectID, db) {
   const shouldClose = db === undefined;
   const _db = db ?? openDb();
   try {
-    const rows = projectID ? _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
-               FROM session WHERE project_id = ?
-               ORDER BY time_updated DESC`).all(projectID) : _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
-               FROM session
-               ORDER BY time_updated DESC`).all();
-    for (const row of rows) {
-      yield {
-        id: row.id,
-        projectID: row.project_id,
-        title: row.title,
-        directory: row.directory,
-        time: { created: row.time_created, updated: row.time_updated }
-      };
+    for (const session of listSessionRowsSync(_db, projectID)) {
+      yield session;
     }
   } finally {
     if (shouldClose)
       _db.close();
   }
 }
-async function* listMessagesSqlite(sessionID, role) {
-  const db = openDb();
+async function* listMessagesSqlite(sessionID, role, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, session_id, time_created, data
-         FROM message WHERE session_id = ?
-         ORDER BY time_created ASC`).all(sessionID);
-    for (const row of rows) {
-      const data = JSON.parse(row.data);
-      if (role && data.role !== role)
-        continue;
-      yield {
-        id: row.id,
-        sessionID: row.session_id,
-        role: data.role,
-        agent: data.agent || "",
-        time: { created: row.time_created }
-      };
+    for (const message of listMessageRowsSync(_db, sessionID, role)) {
+      yield message;
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
-async function* listPartsSqlite(messageID) {
-  const db = openDb();
+async function* listPartsSqlite(messageID, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, message_id, session_id, data
-         FROM part WHERE message_id = ?
-         ORDER BY time_created ASC`).all(messageID);
-    for (const row of rows) {
-      const data = JSON.parse(row.data);
-      const type = data.type === "text" ? "text" : data.type === "tool" ? "tool" : data.type === "file" ? "file" : data.type === "patch" ? "patch" : null;
-      if (!type)
-        continue;
-      const part = {
-        id: row.id,
-        messageID: row.message_id,
-        sessionID: row.session_id,
-        type
-      };
-      if (type === "text") {
-        part.text = data.text;
-      } else if (type === "tool") {
-        part.tool = data.tool;
-        part.state = data.state;
-      } else if (type === "patch") {
-        part.files = data.files;
-      }
+    for (const part of listPartRowsSync(_db, messageID)) {
       yield part;
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
 
@@ -202,24 +243,448 @@ async function* listParts(messageID) {
   }
 }
 
+// src/search/fts.ts
+import { Database as Database2 } from "bun:sqlite";
+var FTS_TABLE = "part_fts";
+var TRI_TABLE = "part_fts_tri";
+var FTS_VERSION = 5;
+var BUSY_TIMEOUT_MS = 15000;
+var TRANSIENT_RETRY_MS = 60000;
+var ensuredAt = null;
+var permanentFailure = false;
+function isTransientSqliteError(err) {
+  const code = err?.code;
+  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED" || code === "SQLITE_PROTOCOL") {
+    return true;
+  }
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return message.includes("database is locked") || message.includes("database table is locked") || message.includes("sqlite_busy") || message.includes("sqlite_locked");
+}
+function ensureFtsOnce() {
+  if (permanentFailure)
+    return { built: false, error: "fts-permanently-disabled" };
+  if (ensuredAt !== null && Date.now() - ensuredAt < TRANSIENT_RETRY_MS) {
+    return { built: false };
+  }
+  let db;
+  try {
+    db = new Database2(getDbPath());
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    const result = ensureFts(db);
+    ensuredAt = Date.now();
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const transient = isTransientSqliteError(err);
+    if (transient) {
+      ensuredAt = Date.now();
+    } else {
+      permanentFailure = true;
+    }
+    return { built: false, error: message, transient };
+  } finally {
+    db?.close();
+  }
+}
+function detectSchemaDrift(db) {
+  const samples = [
+    { type: "text", required: ["$.text"] },
+    { type: "tool", required: ["$.tool"] },
+    { type: "patch", required: ["$.files"] }
+  ];
+  for (const { type, required } of samples) {
+    const row = db.query(`SELECT data FROM part
+         WHERE json_valid(data) AND json_extract(data, '$.type') = ?
+         ORDER BY rowid DESC LIMIT 1`).get(type);
+    if (!row)
+      continue;
+    for (const key of required) {
+      const present = db.query(`SELECT json_type(?, ?) AS t`).get(row.data, key)?.t;
+      if (present === null || present === undefined) {
+        return `part type='${type}' missing expected key '${key}'`;
+      }
+    }
+  }
+  return null;
+}
+function ensureFts(db) {
+  ensureMetaTable(db);
+  const drift = detectSchemaDrift(db);
+  if (drift) {
+    console.warn(`[history-search] OpenCode schema drift detected (${drift}). ` + `Forcing FTS rebuild; if search results look wrong, update this plugin.`);
+    db.exec(`DROP TABLE IF EXISTS ${FTS_TABLE}`);
+    db.exec(`DROP TABLE IF EXISTS ${TRI_TABLE}`);
+  }
+  const tableExists = db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(FTS_TABLE);
+  if (tableExists && triggersExist(db) && versionMatches(db)) {
+    const watermark = readWatermark(db);
+    const maxPart = db.query(`SELECT COALESCE(MAX(rowid), 0) AS r FROM part`).get().r;
+    if (maxPart < watermark) {
+      writeWatermark(db, maxPart);
+      return { built: false };
+    }
+    if (maxPart > watermark) {
+      const t02 = performance.now();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.query(`DELETE FROM ${FTS_TABLE}
+           WHERE part_id IN (SELECT id FROM part WHERE rowid >= ?)`).run(watermark + 1);
+        db.query(`DELETE FROM ${TRI_TABLE}
+           WHERE part_id IN (SELECT id FROM part WHERE rowid >= ?)`).run(watermark + 1);
+        backfillRange(db, watermark + 1);
+        writeWatermark(db, maxPart);
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+      return { built: false, built_ms: performance.now() - t02 };
+    }
+    return { built: false };
+  }
+  const t0 = performance.now();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    buildFts(db);
+    installTriggers(db);
+    const maxPart = db.query(`SELECT COALESCE(MAX(rowid), 0) AS r FROM part`).get().r;
+    writeWatermark(db, maxPart);
+    recordVersion(db);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+  return { built: true, built_ms: performance.now() - t0 };
+}
+function buildFts(db) {
+  db.exec(`DROP TABLE IF EXISTS ${FTS_TABLE}`);
+  db.exec(`
+    CREATE VIRTUAL TABLE ${FTS_TABLE} USING fts5(
+      content,
+      kind UNINDEXED,
+      part_id UNINDEXED,
+      message_id UNINDEXED,
+      session_id UNINDEXED,
+      tokenize = 'unicode61 remove_diacritics 2'
+    );
+  `);
+  db.exec(`DROP TABLE IF EXISTS ${TRI_TABLE}`);
+  db.exec(`
+    CREATE VIRTUAL TABLE ${TRI_TABLE} USING fts5(
+      content,
+      kind UNINDEXED,
+      part_id UNINDEXED,
+      message_id UNINDEXED,
+      session_id UNINDEXED,
+      tokenize = 'trigram'
+    );
+  `);
+  backfillRange(db, 0);
+}
+function backfillRange(db, startRowid) {
+  db.exec(`
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(data, '$.text'), 'text', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'text'
+      AND json_extract(data, '$.text') IS NOT NULL
+      AND json_extract(data, '$.text') != ''
+  `);
+  db.exec(`
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(data, '$.text'), 'text', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'text'
+      AND json_extract(data, '$.text') IS NOT NULL
+      AND json_extract(data, '$.text') != ''
+  `);
+  db.exec(`
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')),
+      'tool_name', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'tool'
+      AND json_extract(data, '$.tool') IS NOT NULL
+      AND trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')) != ''
+  `);
+  db.exec(`
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')),
+      'tool_name', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'tool'
+      AND json_extract(data, '$.tool') IS NOT NULL
+      AND trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')) != ''
+  `);
+  db.exec(`
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(data, '$.state.input'), '') || ' ' || coalesce(json_extract(data, '$.state.output'), '')),
+      'tool_state', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'tool'
+      AND json_extract(data, '$.state') IS NOT NULL
+      AND trim(coalesce(json_extract(data, '$.state.input'), '') || ' ' || coalesce(json_extract(data, '$.state.output'), '')) != ''
+  `);
+  db.exec(`
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT j.value, 'patch_file', p.id, p.message_id, p.session_id
+    FROM (
+      SELECT id, message_id, session_id, json_extract(data, '$.files') AS files
+      FROM part
+      WHERE rowid >= ${startRowid}
+        AND json_valid(data)
+        AND json_extract(data, '$.type') = 'patch'
+        AND json_type(data, '$.files') = 'array'
+    ) p, json_each(p.files) j
+    WHERE j.value IS NOT NULL
+      AND j.value != ''
+  `);
+}
+var EXPECTED_TRIGGERS = ["part_fts_ai", "part_fts_ad", "part_fts_au"];
+function insertFromPartSql() {
+  return `
+    -- text: both tables
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(NEW.data, '$.text'), 'text', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'text'
+        AND json_extract(NEW.data, '$.text') IS NOT NULL
+        AND json_extract(NEW.data, '$.text') != '';
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(NEW.data, '$.text'), 'text', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'text'
+        AND json_extract(NEW.data, '$.text') IS NOT NULL
+        AND json_extract(NEW.data, '$.text') != '';
+
+    -- tool_name: both tables
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')),
+      'tool_name', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'tool'
+        AND json_extract(NEW.data, '$.tool') IS NOT NULL
+        AND trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')) != '';
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')),
+      'tool_name', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'tool'
+        AND json_extract(NEW.data, '$.tool') IS NOT NULL
+        AND trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')) != '';
+
+    -- tool_state: unicode61 only (too big + too noisy for fuzzy)
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(NEW.data, '$.state.input'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.output'), '')),
+      'tool_state', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'tool'
+        AND json_extract(NEW.data, '$.state') IS NOT NULL
+        AND trim(coalesce(json_extract(NEW.data, '$.state.input'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.output'), '')) != '';
+
+    -- patch_file: unicode61 only (exact path match, fuzzy doesn't help)
+    INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT j.value, 'patch_file', NEW.id, NEW.message_id, NEW.session_id
+      FROM json_each(
+        CASE
+          WHEN json_valid(NEW.data)
+           AND json_extract(NEW.data, '$.type') = 'patch'
+           AND json_type(NEW.data, '$.files') = 'array'
+          THEN json_extract(NEW.data, '$.files')
+          ELSE '[]'
+        END
+      ) j
+      WHERE j.value IS NOT NULL
+        AND j.value != '';
+  `;
+}
+function triggersExist(db) {
+  const placeholders = EXPECTED_TRIGGERS.map(() => "?").join(",");
+  const rows = db.query(`SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${placeholders})`).all(...EXPECTED_TRIGGERS);
+  return rows.length === EXPECTED_TRIGGERS.length;
+}
+function installTriggers(db) {
+  for (const name of EXPECTED_TRIGGERS) {
+    db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+  }
+  db.exec(`
+    CREATE TRIGGER part_fts_ai AFTER INSERT ON part
+    BEGIN
+      ${insertFromPartSql()}
+    END;
+  `);
+  db.exec(`
+    CREATE TRIGGER part_fts_ad AFTER DELETE ON part
+    BEGIN
+      DELETE FROM ${FTS_TABLE} WHERE part_id = OLD.id;
+      DELETE FROM ${TRI_TABLE} WHERE part_id = OLD.id;
+    END;
+  `);
+  db.exec(`
+    CREATE TRIGGER part_fts_au AFTER UPDATE ON part
+    BEGIN
+      DELETE FROM ${FTS_TABLE} WHERE part_id = OLD.id;
+      DELETE FROM ${TRI_TABLE} WHERE part_id = OLD.id;
+      ${insertFromPartSql()}
+    END;
+  `);
+}
+function ensureMetaTable(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS part_fts_meta (key TEXT PRIMARY KEY, value TEXT)`);
+}
+function versionMatches(db) {
+  const row = db.query(`SELECT value FROM part_fts_meta WHERE key = 'version'`).get();
+  return row?.value === String(FTS_VERSION);
+}
+function recordVersion(db) {
+  db.query(`INSERT OR REPLACE INTO part_fts_meta(key, value) VALUES('version', ?)`).run(String(FTS_VERSION));
+}
+function readWatermark(db) {
+  const row = db.query(`SELECT value FROM part_fts_meta WHERE key = 'last_rowid'`).get();
+  return row ? Number(row.value) : 0;
+}
+function writeWatermark(db, rowid) {
+  db.query(`INSERT OR REPLACE INTO part_fts_meta(key, value) VALUES('last_rowid', ?)`).run(String(rowid));
+}
+var warnedQueryError = false;
+function searchFts(db, query, opts) {
+  return runFtsQuery(db, FTS_TABLE, query, opts);
+}
+function searchFtsTrigram(db, query, opts) {
+  return runFtsQuery(db, TRI_TABLE, query, opts);
+}
+function runFtsQuery(db, table, query, opts) {
+  const where = [`${table}.content MATCH ?`];
+  const binds = [query];
+  if (opts.projectID) {
+    where.push("s.project_id = ?");
+    binds.push(opts.projectID);
+  }
+  if (opts.role) {
+    where.push("json_extract(m.data, '$.role') = ?");
+    binds.push(opts.role);
+  }
+  if (opts.startTime !== undefined) {
+    where.push("m.time_created >= ?");
+    binds.push(opts.startTime);
+  }
+  if (opts.endTime !== undefined) {
+    where.push("m.time_created <= ?");
+    binds.push(opts.endTime);
+  }
+  binds.push(opts.limit);
+  const sql = `
+    SELECT
+      ${table}.part_id    AS part_id,
+      ${table}.message_id AS message_id,
+      ${table}.session_id AS session_id,
+      ${table}.content    AS content,
+      ${table}.kind       AS kind,
+      m.time_created      AS time_created,
+      s.title             AS session_title,
+      s.directory         AS session_directory
+    FROM ${table}
+    JOIN message m ON m.id = ${table}.message_id
+    JOIN session s ON s.id = ${table}.session_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY m.time_created DESC
+    LIMIT ?
+  `;
+  try {
+    return db.query(sql).all(...binds);
+  } catch (err) {
+    if (!warnedQueryError) {
+      warnedQueryError = true;
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[history-search] FTS query failed (${table}): ${message}`);
+    }
+    return [];
+  }
+}
+function escapeFtsPhrase(s) {
+  const cleaned = sanitizeQuery(s);
+  if (cleaned === null)
+    return null;
+  return `"${cleaned.replace(/"/g, '""')}"`;
+}
+function sanitizeQuery(s) {
+  const cleaned = s.replace(/[\u0000-\u001f]/g, " ").trim();
+  if (cleaned === "")
+    return null;
+  if (!/[\p{L}\p{N}]/u.test(cleaned))
+    return null;
+  return cleaned;
+}
+function searchTitles(db, query, opts) {
+  const cleaned = sanitizeQuery(query);
+  if (cleaned === null)
+    return [];
+  const like = `%${cleaned.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+  const sql = `
+    SELECT id, title, directory, time_updated
+    FROM session
+    WHERE title LIKE ? ESCAPE '\\'
+      ${opts.projectID ? "AND project_id = ?" : ""}
+    ORDER BY time_updated DESC
+    LIMIT ?
+  `;
+  const binds = [like];
+  if (opts.projectID)
+    binds.push(opts.projectID);
+  binds.push(opts.limit);
+  return db.query(sql).all(...binds);
+}
+
 // src/storage-provider.ts
-var useSqlite = dbExists();
+function useSqlite() {
+  return dbExists();
+}
+var warnedFtsError = false;
+async function withSqlite(fn) {
+  if (!useSqlite())
+    return null;
+  const ftsResult = ensureFtsOnce();
+  if (ftsResult.error && !ftsResult.transient && !warnedFtsError) {
+    warnedFtsError = true;
+    console.warn(`[history-search] FTS5 index unavailable: ${ftsResult.error}. ` + `Falling back to slower row-scan search. ` + `See README "Rollback" section if you want to remove the index entirely.`);
+  } else if (ftsResult.built && ftsResult.built_ms !== undefined) {
+    console.warn(`[history-search] Built FTS5 search index in ${Math.round(ftsResult.built_ms)}ms ` + `(one-time setup, see README "Rollback" to remove).`);
+  }
+  return await withDb(fn);
+}
 async function* listSessions2(projectID) {
-  if (useSqlite) {
+  if (useSqlite()) {
     yield* listSessionsSqlite(projectID);
   } else {
     yield* listSessions(projectID);
   }
 }
 async function* listMessages2(sessionID, role) {
-  if (useSqlite) {
+  if (useSqlite()) {
     yield* listMessagesSqlite(sessionID, role);
   } else {
     yield* listMessages(sessionID, role);
   }
 }
 async function* listParts2(messageID) {
-  if (useSqlite) {
+  if (useSqlite()) {
     yield* listPartsSqlite(messageID);
   } else {
     yield* listParts(messageID);
@@ -228,8 +693,139 @@ async function* listParts2(messageID) {
 
 // src/search/keyword.ts
 async function searchKeyword(projectID, query, options = {}) {
+  const fast = await withSqlite((db) => {
+    if (options.regex) {
+      return searchKeywordSqlite(db, projectID, query, options);
+    }
+    return searchKeywordFts(db, projectID, query, options);
+  });
+  if (fast !== null)
+    return fast;
+  return searchKeywordGenerators(projectID, query, options);
+}
+function buildPattern(query, options) {
+  return options.regex ? new RegExp(query, options.caseSensitive ? "" : "i") : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), options.caseSensitive ? "" : "i");
+}
+function searchKeywordFts(db, projectID, query, options) {
+  const limit = options.limit || 50;
+  const phrase = escapeFtsPhrase(query);
+  if (phrase === null) {
+    return searchKeywordSqlite(db, projectID, query, options);
+  }
+  const out = [];
+  const titles = searchTitles(db, query, { projectID, limit });
+  for (const t of titles) {
+    if (out.length >= limit)
+      break;
+    out.push({
+      sessionID: t.id,
+      sessionTitle: t.title,
+      timestamp: t.time_updated,
+      matchType: "title",
+      excerpt: t.title,
+      context: t.title,
+      projectDirectory: t.directory
+    });
+  }
+  const overfetch = Math.min(limit * 3, 500);
+  const hits = searchFts(db, phrase, {
+    projectID,
+    role: options.role,
+    startTime: options.startTime,
+    endTime: options.endTime,
+    limit: overfetch
+  });
+  const pattern = buildPattern(query, options);
+  const seen = new Set;
+  for (const hit of hits) {
+    if (out.length >= limit)
+      break;
+    const m = ftsHitToSearchMatch(hit, query, pattern);
+    const key = `${hit.part_id}|${m.matchType}|${m.excerpt}`;
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out.sort((a, b) => b.timestamp - a.timestamp);
+}
+function ftsHitToSearchMatch(hit, query, pattern) {
+  const base = {
+    sessionID: hit.session_id,
+    sessionTitle: hit.session_title,
+    timestamp: hit.time_created,
+    messageID: hit.message_id,
+    partID: hit.part_id,
+    projectDirectory: hit.session_directory
+  };
+  const content = hit.content;
+  const m = pattern.exec(content);
+  const idx = m?.index ?? 0;
+  const contextStart = Math.max(0, idx - 100);
+  const contextEnd = Math.min(content.length, idx + (m?.[0].length ?? query.length) + 100);
+  const excerpt = m?.[0] ?? query;
+  const context = content.slice(contextStart, contextEnd);
+  switch (hit.kind) {
+    case "text":
+      return { ...base, matchType: "message", excerpt, context };
+    case "tool_name":
+    case "tool_state":
+      return { ...base, matchType: "tool", excerpt, context };
+    case "patch_file":
+      return {
+        ...base,
+        matchType: "filepath",
+        excerpt: content,
+        context: `Modified file: ${content}`
+      };
+    default: {
+      const _exhaustive = hit.kind;
+      throw new Error(`unhandled FtsKind: ${String(_exhaustive)}`);
+    }
+  }
+}
+function searchKeywordSqlite(db, projectID, query, options) {
+  const pattern = buildPattern(query, options);
+  const limit = options.limit || 50;
   const results = [];
-  const pattern = options.regex ? new RegExp(query, options.caseSensitive ? "" : "i") : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), options.caseSensitive ? "" : "i");
+  const sessions = listSessionRowsSync(db, projectID);
+  for (const session of sessions) {
+    if (results.length >= limit)
+      break;
+    if (pattern.test(session.title)) {
+      results.push({
+        sessionID: session.id,
+        sessionTitle: session.title,
+        timestamp: session.time.updated,
+        matchType: "title",
+        excerpt: session.title,
+        context: session.title,
+        projectDirectory: session.directory
+      });
+      if (results.length >= limit)
+        break;
+    }
+    const messages = listMessageRowsSync(db, session.id, options.role);
+    for (const message of messages) {
+      if (results.length >= limit)
+        break;
+      if (options.startTime !== undefined && message.time.created < options.startTime)
+        continue;
+      if (options.endTime !== undefined && message.time.created > options.endTime)
+        continue;
+      const parts = listPartRowsSync(db, message.id);
+      for (const part of parts) {
+        if (results.length >= limit)
+          break;
+        matchPart(results, pattern, query, session, message, part, limit);
+      }
+    }
+  }
+  return results.sort((a, b) => b.timestamp - a.timestamp);
+}
+async function searchKeywordGenerators(projectID, query, options) {
+  const results = [];
+  const pattern = buildPattern(query, options);
   const limit = options.limit || 50;
   for await (const session of listSessions2(projectID)) {
     if (results.length >= limit)
@@ -241,7 +837,8 @@ async function searchKeyword(projectID, query, options = {}) {
         timestamp: session.time.updated,
         matchType: "title",
         excerpt: session.title,
-        context: session.title
+        context: session.title,
+        projectDirectory: session.directory
       });
       if (results.length >= limit)
         break;
@@ -252,90 +849,91 @@ async function searchKeyword(projectID, query, options = {}) {
       for await (const part of listParts2(message.id)) {
         if (results.length >= limit)
           break;
-        if (part.type === "text" && part.text && pattern.test(part.text)) {
-          const match = part.text.match(pattern);
-          const matchIndex = match ? part.text.indexOf(match[0]) : 0;
-          const contextStart = Math.max(0, matchIndex - 100);
-          const contextEnd = Math.min(part.text.length, matchIndex + match[0].length + 100);
-          const context = part.text.slice(contextStart, contextEnd);
-          results.push({
-            sessionID: session.id,
-            sessionTitle: session.title,
-            timestamp: message.time.created,
-            matchType: "message",
-            excerpt: match ? match[0] : query,
-            context,
-            messageID: message.id,
-            partID: part.id,
-            projectDirectory: session.directory
-          });
-          if (results.length >= limit)
-            break;
-        }
-        if (results.length >= limit)
-          break;
-        if (part.type === "tool" && part.tool && pattern.test(part.tool)) {
-          results.push({
-            sessionID: session.id,
-            sessionTitle: session.title,
-            timestamp: message.time.created,
-            matchType: "tool",
-            excerpt: part.tool,
-            context: part.state?.title || part.tool,
-            messageID: message.id,
-            partID: part.id,
-            projectDirectory: session.directory
-          });
-          if (results.length >= limit)
-            break;
-        }
-        if (results.length >= limit)
-          break;
-        if (part.type === "tool" && part.state) {
-          const inputStr = JSON.stringify(part.state.input || {});
-          const outputStr = part.state.output || "";
-          if (pattern.test(inputStr) || pattern.test(outputStr)) {
-            const matched = pattern.exec(inputStr) || pattern.exec(outputStr);
-            if (matched) {
-              results.push({
-                sessionID: session.id,
-                sessionTitle: session.title,
-                timestamp: message.time.created,
-                matchType: "filepath",
-                excerpt: matched[0],
-                context: part.state.title || part.tool || "",
-                messageID: message.id,
-                partID: part.id,
-                projectDirectory: session.directory
-              });
-              if (results.length >= limit)
-                break;
-            }
-          }
-        }
-        if (results.length < limit && part.type === "patch" && part.files) {
-          for (const filePath of part.files) {
-            if (results.length >= limit)
-              break;
-            if (pattern.test(filePath)) {
-              results.push({
-                sessionID: session.id,
-                sessionTitle: session.title,
-                timestamp: message.time.created,
-                matchType: "filepath",
-                excerpt: filePath,
-                context: `Modified file: ${filePath}`,
-                messageID: message.id,
-                partID: part.id,
-                projectDirectory: session.directory
-              });
-            }
-          }
-        }
+        matchPart(results, pattern, query, session, message, part, limit);
       }
     }
   }
   return results.sort((a, b) => b.timestamp - a.timestamp);
+}
+function matchPart(results, pattern, query, session, message, part, limit) {
+  if (results.length >= limit)
+    return;
+  if (part.type === "text" && part.text && pattern.test(part.text)) {
+    const match = part.text.match(pattern);
+    const matchIndex = match ? part.text.indexOf(match[0]) : 0;
+    const contextStart = Math.max(0, matchIndex - 100);
+    const contextEnd = Math.min(part.text.length, matchIndex + match[0].length + 100);
+    const context = part.text.slice(contextStart, contextEnd);
+    results.push({
+      sessionID: session.id,
+      sessionTitle: session.title,
+      timestamp: message.time.created,
+      matchType: "message",
+      excerpt: match ? match[0] : query,
+      context,
+      messageID: message.id,
+      partID: part.id,
+      projectDirectory: session.directory
+    });
+    if (results.length >= limit)
+      return;
+  }
+  if (part.type === "tool" && part.tool && pattern.test(part.tool)) {
+    results.push({
+      sessionID: session.id,
+      sessionTitle: session.title,
+      timestamp: message.time.created,
+      matchType: "tool",
+      excerpt: part.tool,
+      context: part.state?.title || part.tool,
+      messageID: message.id,
+      partID: part.id,
+      projectDirectory: session.directory
+    });
+    if (results.length >= limit)
+      return;
+  }
+  if (part.type === "tool" && part.state) {
+    const inputStr = JSON.stringify(part.state.input || {});
+    const outputStr = part.state.output || "";
+    if (pattern.test(inputStr) || pattern.test(outputStr)) {
+      const matched = pattern.exec(inputStr) || pattern.exec(outputStr);
+      if (matched) {
+        results.push({
+          sessionID: session.id,
+          sessionTitle: session.title,
+          timestamp: message.time.created,
+          matchType: "filepath",
+          excerpt: matched[0],
+          context: part.state.title || part.tool || "",
+          messageID: message.id,
+          partID: part.id,
+          projectDirectory: session.directory
+        });
+        if (results.length >= limit)
+          return;
+      }
+    }
+  }
+  if (part.type === "patch" && part.files) {
+    for (const filePath of part.files) {
+      if (results.length >= limit)
+        return;
+      if (pattern.test(filePath)) {
+        results.push({
+          sessionID: session.id,
+          sessionTitle: session.title,
+          timestamp: message.time.created,
+          matchType: "filepath",
+          excerpt: filePath,
+          context: `Modified file: ${filePath}`,
+          messageID: message.id,
+          partID: part.id,
+          projectDirectory: session.directory
+        });
+      }
+    }
+  }
 }
 
 // node_modules/fuse.js/dist/fuse.mjs
@@ -1634,8 +2232,70 @@ Fuse.config = Config;
 
 // src/search/fuzzy.ts
 async function searchFuzzy(projectID, query, options = {}) {
-  const threshold = options.threshold ?? 0.4;
+  const fast = await withSqlite((db) => searchFuzzyTrigram(db, projectID, query, options));
+  if (fast !== null)
+    return fast;
+  return searchFuzzyGenerators(projectID, query, options);
+}
+function searchFuzzyTrigram(db, projectID, query, options) {
   const limit = options.limit ?? 50;
+  const phrase = escapeFtsPhrase(query);
+  if (phrase === null)
+    return [];
+  const out = [];
+  const titles = searchTitles(db, query, { projectID, limit });
+  for (const t of titles) {
+    if (out.length >= limit)
+      break;
+    out.push({
+      sessionID: t.id,
+      sessionTitle: t.title,
+      timestamp: t.time_updated,
+      matchType: "title",
+      excerpt: t.title,
+      context: t.title,
+      projectDirectory: t.directory
+    });
+  }
+  const overfetch = Math.min(limit * 3, 500);
+  const hits = searchFtsTrigram(db, phrase, {
+    projectID,
+    role: options.role,
+    startTime: options.startTime,
+    endTime: options.endTime,
+    limit: overfetch
+  });
+  const seen = new Set;
+  for (const hit of hits) {
+    if (out.length >= limit)
+      break;
+    const m = ftsHitToFuzzyMatch(hit, query);
+    const key = `${hit.part_id}|${m.matchType}|${m.excerpt}`;
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out.sort((a, b) => b.timestamp - a.timestamp);
+}
+function ftsHitToFuzzyMatch(hit, query) {
+  const content = hit.content;
+  const excerpt = content.slice(0, 100) || query;
+  const context = content.slice(0, 300) || excerpt;
+  const matchType = hit.kind === "text" ? "message" : "tool";
+  return {
+    sessionID: hit.session_id,
+    sessionTitle: hit.session_title,
+    timestamp: hit.time_created,
+    matchType,
+    excerpt,
+    context,
+    messageID: hit.message_id,
+    partID: hit.part_id,
+    projectDirectory: hit.session_directory
+  };
+}
+async function searchFuzzyGenerators(projectID, query, options) {
   const items = [];
   try {
     for await (const session of listSessions2(projectID)) {
@@ -1649,56 +2309,7 @@ async function searchFuzzy(projectID, query, options = {}) {
         for await (const message of listMessages2(session.id, options.role)) {
           try {
             for await (const part of listParts2(message.id)) {
-              if (part.type === "text" && part.text) {
-                items.push({
-                  session,
-                  content: part.text,
-                  type: "message",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created
-                });
-              }
-              if (part.type === "tool" && part.tool) {
-                items.push({
-                  session,
-                  content: part.tool + " " + (part.state?.title || ""),
-                  type: "tool",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created
-                });
-              }
-              if (part.type === "tool" && part.state) {
-                const inputStr = JSON.stringify(part.state.input || {});
-                const outputStr = part.state.output || "";
-                const combined = inputStr + " " + outputStr;
-                const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
-                if (pathMatches) {
-                  for (const path3 of pathMatches) {
-                    items.push({
-                      session,
-                      content: path3,
-                      type: "filepath",
-                      messageID: message.id,
-                      partID: part.id,
-                      timestamp: message.time.created
-                    });
-                  }
-                }
-              }
-              if (part.type === "patch" && part.files) {
-                for (const filePath of part.files) {
-                  items.push({
-                    session,
-                    content: filePath,
-                    type: "filepath",
-                    messageID: message.id,
-                    partID: part.id,
-                    timestamp: message.time.created
-                  });
-                }
-              }
+              addPartItems(items, session, message, part);
             }
           } catch {
             continue;
@@ -1711,6 +2322,63 @@ async function searchFuzzy(projectID, query, options = {}) {
   } catch {
     return [];
   }
+  return runFuse(items, query, options);
+}
+function addPartItems(items, session, message, part) {
+  if (part.type === "text" && part.text) {
+    items.push({
+      session,
+      content: part.text,
+      type: "message",
+      messageID: message.id,
+      partID: part.id,
+      timestamp: message.time.created
+    });
+  }
+  if (part.type === "tool" && part.tool) {
+    items.push({
+      session,
+      content: part.tool + " " + (part.state?.title || ""),
+      type: "tool",
+      messageID: message.id,
+      partID: part.id,
+      timestamp: message.time.created
+    });
+  }
+  if (part.type === "tool" && part.state) {
+    const inputStr = JSON.stringify(part.state.input || {});
+    const outputStr = part.state.output || "";
+    const combined = inputStr + " " + outputStr;
+    const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
+    if (pathMatches) {
+      for (const p of pathMatches) {
+        items.push({
+          session,
+          content: p,
+          type: "filepath",
+          messageID: message.id,
+          partID: part.id,
+          timestamp: message.time.created
+        });
+      }
+    }
+  }
+  if (part.type === "patch" && part.files) {
+    for (const filePath of part.files) {
+      items.push({
+        session,
+        content: filePath,
+        type: "filepath",
+        messageID: message.id,
+        partID: part.id,
+        timestamp: message.time.created
+      });
+    }
+  }
+}
+function runFuse(items, query, options) {
+  const threshold = options.threshold ?? 0.4;
+  const limit = options.limit ?? 50;
   const fuse = new Fuse(items, {
     keys: ["content"],
     threshold,
@@ -1955,9 +2623,9 @@ function isMatch(path3, query, isExact) {
   return path3 === query || path3.endsWith(`/${query}`);
 }
 async function traceFile(projectID, filePath, options) {
-  const { Database: Database2 } = await import("bun:sqlite");
+  const { Database: Database3 } = await import("bun:sqlite");
   const dbPath = getDbPath();
-  const db = new Database2(dbPath, { readonly: true });
+  const db = new Database3(dbPath, { readonly: true });
   try {
     return traceFileSqlite(db, projectID, filePath, options);
   } finally {
@@ -2038,20 +2706,24 @@ var historySearch = tool({
     if (!args.query && !args.filePath) {
       throw new Error("Either 'query' or 'filePath' must be provided.");
     }
+    if (args.query !== undefined && args.query.length > 1024) {
+      throw new Error(`'query' is too long (${args.query.length} chars; max 1024).`);
+    }
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
+    const dateRange = args.date ? parseDateFilter(args.date) : null;
     if (args.filePath) {
       let matches2 = await traceFile(projectID, args.filePath, {
         limit: args.limit
       });
-      if (args.date) {
-        const dateRange = parseDateFilter(args.date);
+      if (dateRange)
         matches2 = filterByDate(matches2, dateRange);
-      }
       return formatTraceResults(matches2);
     }
     if (!args.query) {
       throw new Error("'query' is required when 'filePath' is not provided.");
     }
+    const startTime = dateRange?.start.getTime();
+    const endTime = dateRange?.end.getTime();
     let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
       threshold: args.fuzzyThreshold,
       limit: args.limit,
@@ -2060,12 +2732,12 @@ var historySearch = tool({
       regex: args.regex,
       caseSensitive: args.caseSensitive,
       limit: args.limit,
-      role: args.role
+      role: args.role,
+      startTime,
+      endTime
     });
-    if (args.date) {
-      const dateRange = parseDateFilter(args.date);
+    if (dateRange)
       matches = filterByDate(matches, dateRange);
-    }
     return formatResults(matches);
   }
 });

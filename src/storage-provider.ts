@@ -26,6 +26,9 @@ function useSqlite(): boolean {
 }
 
 // One-time logging latch for FTS errors so we don't spam the console.
+// Transient (busy/locked) failures are NOT latched here \u2014 they'll retry
+// automatically inside ensureFtsOnce after a backoff, and warning the user
+// about a brief lock contention would just be noise.
 let warnedFtsError = false;
 
 /**
@@ -51,7 +54,7 @@ export async function withSqlite<T>(
 ): Promise<T | null> {
   if (!useSqlite()) return null;
   const ftsResult = ensureFtsOnce();
-  if (ftsResult.error && !warnedFtsError) {
+  if (ftsResult.error && !ftsResult.transient && !warnedFtsError) {
     warnedFtsError = true;
     console.warn(
       `[history-search] FTS5 index unavailable: ${ftsResult.error}. ` +

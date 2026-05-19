@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts, withSqlite } from "../storage-provider";
 import { listSessionRowsSync, listMessageRowsSync, listPartRowsSync } from "../storage-sqlite";
-import { searchFts, searchTitles, escapeFtsPhrase, type FtsHit, type FtsKind } from "./fts";
+import { searchFts, searchTitles, escapeFtsPhrase, type FtsHit } from "./fts";
 
 export interface SearchMatch {
   sessionID: string;
@@ -77,21 +77,21 @@ function searchKeywordFts(
   const out: SearchMatch[] = [];
 
   // 1) Title matches via LIKE on session.title.
-  //    Skipped when a role filter is set — titles aren't role-specific.
-  if (!options.role) {
-    const titles = searchTitles(db, query, { projectID, limit });
-    for (const t of titles) {
-      if (out.length >= limit) break;
-      out.push({
-        sessionID: t.id,
-        sessionTitle: t.title,
-        timestamp: t.time_updated,
-        matchType: "title",
-        excerpt: t.title,
-        context: t.title,
-        projectDirectory: t.directory,
-      });
-    }
+  //    Titles aren't role-specific (sessions don't have a single role), so
+  //    we include them regardless of the role filter. This matches the
+  //    row-scan path's behavior (matchPart-adjacent logic at line ~196).
+  const titles = searchTitles(db, query, { projectID, limit });
+  for (const t of titles) {
+    if (out.length >= limit) break;
+    out.push({
+      sessionID: t.id,
+      sessionTitle: t.title,
+      timestamp: t.time_updated,
+      matchType: "title",
+      excerpt: t.title,
+      context: t.title,
+      projectDirectory: t.directory,
+    });
   }
 
   // 2) Content matches via FTS5.
@@ -106,12 +106,14 @@ function searchKeywordFts(
   });
 
   const pattern = buildPattern(query, options);
-  const seen = new Set<string>(); // partID|matchType to dedupe
+  // Dedup key includes excerpt as a tie-breaker: tool_name and tool_state
+  // both map to matchType 'tool', so two FTS rows for the same part_id can
+  // collapse to the same (partID, matchType). The excerpt distinguishes them.
+  const seen = new Set<string>();
 
   for (const hit of hits) {
     if (out.length >= limit) break;
     const m = ftsHitToSearchMatch(hit, query, pattern);
-    if (!m) continue;
     const key = `${hit.part_id}|${m.matchType}|${m.excerpt}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -125,8 +127,9 @@ function searchKeywordFts(
  * Convert one FtsHit into a SearchMatch entry. We use the FTS-indexed `content`
  * column directly instead of re-fetching and re-decoding the raw part.data
  * blob. For text hits this is the message text; for patch_file hits it's the
- * file path; for tool hits it's the tool name + title. This avoids dragging
- * 16KB+ data blobs across the FFI per result.
+ * file path; for tool hits it's the tool name (tool_name) or the input/output
+ * blob (tool_state). This avoids dragging 16KB+ data blobs across the FFI
+ * per result.
  *
  * The pattern is the same RegExp the row-scan path uses, so the excerpt /
  * context extraction logic is identical when both paths return the same hit.
@@ -135,7 +138,7 @@ function ftsHitToSearchMatch(
   hit: FtsHit,
   query: string,
   pattern: RegExp,
-): SearchMatch | null {
+): SearchMatch {
   const base = {
     sessionID: hit.session_id,
     sessionTitle: hit.session_title,
@@ -146,8 +149,8 @@ function ftsHitToSearchMatch(
   };
 
   const content = hit.content;
-  const m = content.match(pattern);
-  const idx = m ? content.indexOf(m[0]) : 0;
+  const m = pattern.exec(content);
+  const idx = m?.index ?? 0;
   const contextStart = Math.max(0, idx - 100);
   const contextEnd = Math.min(
     content.length,
@@ -156,13 +159,19 @@ function ftsHitToSearchMatch(
   const excerpt = m?.[0] ?? query;
   const context = content.slice(contextStart, contextEnd);
 
-  switch (hit.kind as FtsKind) {
+  // Exhaustive switch on FtsKind. If a new kind is added to fts.ts, the
+  // `never` witness at the end forces this to be updated at compile time.
+  switch (hit.kind) {
     case "text":
       return { ...base, matchType: "message", excerpt, context };
+    // Both tool_name and tool_state map to matchType "tool" — both represent
+    // a tool invocation, not a file path. Prior versions misreported
+    // tool_state as "filepath" because the row-scan path extracted file-path-
+    // shaped substrings out of the JSON blob; the FTS index doesn't have
+    // that semantic.
     case "tool_name":
-      return { ...base, matchType: "tool", excerpt, context };
     case "tool_state":
-      return { ...base, matchType: "filepath", excerpt, context };
+      return { ...base, matchType: "tool", excerpt, context };
     case "patch_file":
       // For patches, the entire content IS the file path. Surface it whole.
       return {
@@ -171,8 +180,11 @@ function ftsHitToSearchMatch(
         excerpt: content,
         context: `Modified file: ${content}`,
       };
+    default: {
+      const _exhaustive: never = hit.kind;
+      throw new Error(`unhandled FtsKind: ${String(_exhaustive)}`);
+    }
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------

@@ -89,6 +89,24 @@ describe("file-trace search", () => {
     db.run(`INSERT INTO session VALUES ('ses_g', 'proj_main', 'malformed-patch', '/mock/main', 'malformed patch', 'v1', 1775386800000, 1775386801200)`);
     db.run(`INSERT INTO message VALUES ('msg_g1', 'ses_g', 1775386800000, 1775386800000, '{"role":"assistant","agent":"build"}')`);
     db.run(`INSERT INTO part VALUES ('part_g1_patch', 'msg_g1', 'ses_g', 1775386800100, 1775386800100, '{"type":"patch","files":oops}')`);
+
+    // Absolute-path fixtures. Modern OpenCode (and many editors) record the
+    // edit/write filePath as an absolute path (e.g. the full
+    // /Users/.../project/src/foo.ts string). The README's examples encourage
+    // users to query with a project-relative path like "src/auth.ts", so we
+    // need to confirm those queries match against absolute stored paths.
+    db.run(`INSERT INTO session VALUES ('ses_abs', 'proj_main', 'absolute-path-session', '/mock/main', 'absolute path session', 'v1', 1775400000000, 1775400001200)`);
+    db.run(`INSERT INTO message VALUES ('msg_abs1', 'ses_abs', 1775400000000, 1775400000000, '{"role":"user","agent":"user"}')`);
+    db.run(`INSERT INTO message VALUES ('msg_abs2', 'ses_abs', 1775400001000, 1775400001000, '{"role":"assistant","agent":"build"}')`);
+    db.run(`INSERT INTO part VALUES ('part_abs1_text', 'msg_abs1', 'ses_abs', 1775400000000, 1775400000000, '{"type":"text","text":"edit the FTS module"}')`);
+    db.run(`INSERT INTO part VALUES ('part_abs2_tool', 'msg_abs2', 'ses_abs', 1775400001100, 1775400001100, '{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"/Users/me/project/src/search/fts.ts"},"output":"Edited fts.ts","title":"Edit FTS module"}}')`);
+    db.run(`INSERT INTO part VALUES ('part_abs2_patch', 'msg_abs2', 'ses_abs', 1775400001200, 1775400001200, '{"type":"patch","files":["/Users/me/project/src/search/fts.ts"]}')`);
+
+    // Decoy: similar suffix but should NOT match a "src/search/fts.ts" query
+    // because the suffix check requires a leading slash before the query.
+    db.run(`INSERT INTO session VALUES ('ses_decoy', 'proj_main', 'decoy-suffix-session', '/mock/main', 'decoy suffix session', 'v1', 1775500000000, 1775500001200)`);
+    db.run(`INSERT INTO message VALUES ('msg_decoy1', 'ses_decoy', 1775500001000, 1775500001000, '{"role":"assistant","agent":"build"}')`);
+    db.run(`INSERT INTO part VALUES ('part_decoy_tool', 'msg_decoy1', 'ses_decoy', 1775500001100, 1775500001100, '{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"/Users/me/other-src/search/fts.ts"},"output":"Edited","title":"Edit other fts"}}')`);
   });
 
   afterAll(() => {
@@ -286,6 +304,35 @@ describe("file-trace search", () => {
       const results = traceFileSqlite(db, null, "src/auth.ts");
       const sesE = results.find((r) => r.sessionID === "ses_e");
       expect(sesE?.userPrompt).toBe("touch auth in other project");
+    });
+  });
+
+  describe("Group 8: relative-query matching against absolute stored paths", () => {
+    test("matches a project-relative query against an absolute stored filePath", () => {
+      // Stored: /Users/me/project/src/search/fts.ts
+      // Query:  src/search/fts.ts
+      // Should match. Previously failed because isExactPath required strict equality.
+      const results = traceFileSqlite(db, "proj_main", "src/search/fts.ts");
+      expect(results.find((r) => r.sessionID === "ses_abs")).toBeDefined();
+    });
+
+    test("matches a basename query against an absolute stored filePath", () => {
+      const results = traceFileSqlite(db, "proj_main", "fts.ts");
+      expect(results.find((r) => r.sessionID === "ses_abs")).toBeDefined();
+    });
+
+    test("matches absolute query against absolute stored filePath", () => {
+      const results = traceFileSqlite(db, "proj_main", "/Users/me/project/src/search/fts.ts");
+      expect(results.find((r) => r.sessionID === "ses_abs")).toBeDefined();
+    });
+
+    test("does not match a similar-suffix path that is missing the leading slash", () => {
+      // Stored: /Users/me/other-src/search/fts.ts
+      // Query:  src/search/fts.ts
+      // Must NOT match. The slash-prefixed suffix check is what prevents this.
+      const results = traceFileSqlite(db, "proj_main", "src/search/fts.ts");
+      const decoy = results.find((r) => r.sessionID === "ses_decoy");
+      expect(decoy).toBeUndefined();
     });
   });
 });

@@ -1,6 +1,8 @@
+import type { Database } from "bun:sqlite";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts, withSqlite } from "../storage-provider";
 import { listSessionRowsSync, listMessageRowsSync, listPartRowsSync } from "../storage-sqlite";
+import { searchFts, searchTitles, escapeFtsPhrase, type FtsHit, type FtsKind } from "./fts";
 
 export interface SearchMatch {
   sessionID: string;
@@ -19,6 +21,10 @@ export interface KeywordOptions {
   caseSensitive?: boolean;
   limit?: number;
   role?: "user" | "assistant";
+  /** ms epoch, inclusive. Pushed into SQL when on the SQLite fast paths. */
+  startTime?: number;
+  /** ms epoch, inclusive. Pushed into SQL when on the SQLite fast paths. */
+  endTime?: number;
 }
 
 export async function searchKeyword(
@@ -26,10 +32,14 @@ export async function searchKeyword(
   query: string,
   options: KeywordOptions = {},
 ): Promise<SearchMatch[]> {
-  // Fast path: SQLite available => single shared connection, sync iteration.
-  const fast = await withSqlite((db) =>
-    searchKeywordSqlite(db, projectID, query, options),
-  );
+  // FTS5 fast path: keyword (non-regex) + SQLite => indexed MATCH.
+  // Regex falls back to Phase 1 single-connection row scan.
+  const fast = await withSqlite((db) => {
+    if (options.regex) {
+      return searchKeywordSqlite(db, projectID, query, options);
+    }
+    return searchKeywordFts(db, projectID, query, options);
+  });
   if (fast !== null) return fast;
   // Legacy JSON path (or tests that mock storage-provider)
   return searchKeywordGenerators(projectID, query, options);
@@ -45,10 +55,132 @@ function buildPattern(query: string, options: KeywordOptions): RegExp {
 }
 
 // ---------------------------------------------------------------------------
-// SQLite fast path. One Database, plain for-loops, no async overhead per row.
+// FTS5 fast path. Uses the indexed part_fts table for content matches and a
+// LIKE query on `session.title` for title matches. Falls back to the Phase 1
+// row scan if the query has no tokenizable content (FTS5 would syntax-error).
+// ---------------------------------------------------------------------------
+function searchKeywordFts(
+  db: Database,
+  projectID: string | null,
+  query: string,
+  options: KeywordOptions,
+): SearchMatch[] {
+  const limit = options.limit || 50;
+  const phrase = escapeFtsPhrase(query);
+
+  // No tokenizable content (empty, whitespace, all punctuation). FTS5 would
+  // syntax-error. Fall back to the row scan which uses RegExp semantics.
+  if (phrase === null) {
+    return searchKeywordSqlite(db, projectID, query, options);
+  }
+
+  const out: SearchMatch[] = [];
+
+  // 1) Title matches via LIKE on session.title.
+  //    Skipped when a role filter is set — titles aren't role-specific.
+  if (!options.role) {
+    const titles = searchTitles(db, query, { projectID, limit });
+    for (const t of titles) {
+      if (out.length >= limit) break;
+      out.push({
+        sessionID: t.id,
+        sessionTitle: t.title,
+        timestamp: t.time_updated,
+        matchType: "title",
+        excerpt: t.title,
+        context: t.title,
+        projectDirectory: t.directory,
+      });
+    }
+  }
+
+  // 2) Content matches via FTS5.
+  // Over-fetch a bit because we'll dedupe by (partID, matchType).
+  const overfetch = Math.min(limit * 3, 500);
+  const hits = searchFts(db, phrase, {
+    projectID,
+    role: options.role,
+    startTime: options.startTime,
+    endTime: options.endTime,
+    limit: overfetch,
+  });
+
+  const pattern = buildPattern(query, options);
+  const seen = new Set<string>(); // partID|matchType to dedupe
+
+  for (const hit of hits) {
+    if (out.length >= limit) break;
+    const m = ftsHitToSearchMatch(hit, query, pattern);
+    if (!m) continue;
+    const key = `${hit.part_id}|${m.matchType}|${m.excerpt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+
+  return out.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/**
+ * Convert one FtsHit into a SearchMatch entry. We use the FTS-indexed `content`
+ * column directly instead of re-fetching and re-decoding the raw part.data
+ * blob. For text hits this is the message text; for patch_file hits it's the
+ * file path; for tool hits it's the tool name + title. This avoids dragging
+ * 16KB+ data blobs across the FFI per result.
+ *
+ * The pattern is the same RegExp the row-scan path uses, so the excerpt /
+ * context extraction logic is identical when both paths return the same hit.
+ */
+function ftsHitToSearchMatch(
+  hit: FtsHit,
+  query: string,
+  pattern: RegExp,
+): SearchMatch | null {
+  const base = {
+    sessionID: hit.session_id,
+    sessionTitle: hit.session_title,
+    timestamp: hit.time_created,
+    messageID: hit.message_id,
+    partID: hit.part_id,
+    projectDirectory: hit.session_directory,
+  };
+
+  const content = hit.content;
+  const m = content.match(pattern);
+  const idx = m ? content.indexOf(m[0]) : 0;
+  const contextStart = Math.max(0, idx - 100);
+  const contextEnd = Math.min(
+    content.length,
+    idx + (m?.[0].length ?? query.length) + 100,
+  );
+  const excerpt = m?.[0] ?? query;
+  const context = content.slice(contextStart, contextEnd);
+
+  switch (hit.kind as FtsKind) {
+    case "text":
+      return { ...base, matchType: "message", excerpt, context };
+    case "tool_name":
+      return { ...base, matchType: "tool", excerpt, context };
+    case "tool_state":
+      return { ...base, matchType: "filepath", excerpt, context };
+    case "patch_file":
+      // For patches, the entire content IS the file path. Surface it whole.
+      return {
+        ...base,
+        matchType: "filepath",
+        excerpt: content,
+        context: `Modified file: ${content}`,
+      };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// SQLite Phase-1 fast path (regex mode, or FTS fallback for empty queries).
+// One Database, plain for-loops, no async overhead per row.
 // ---------------------------------------------------------------------------
 function searchKeywordSqlite(
-  db: any,
+  db: Database,
   projectID: string | null,
   query: string,
   options: KeywordOptions,
@@ -77,6 +209,9 @@ function searchKeywordSqlite(
     const messages = listMessageRowsSync(db, session.id, options.role);
     for (const message of messages) {
       if (results.length >= limit) break;
+      // Apply date filter here too, since regex path doesn't have SQL pushdown.
+      if (options.startTime !== undefined && message.time.created < options.startTime) continue;
+      if (options.endTime !== undefined && message.time.created > options.endTime) continue;
       const parts = listPartRowsSync(db, message.id);
       for (const part of parts) {
         if (results.length >= limit) break;
@@ -129,7 +264,7 @@ async function searchKeywordGenerators(
 }
 
 // ---------------------------------------------------------------------------
-// Shared per-part matcher. Identical logic for both paths.
+// Shared per-part matcher. Identical logic for both row-scan paths.
 // ---------------------------------------------------------------------------
 function matchPart(
   results: SearchMatch[],

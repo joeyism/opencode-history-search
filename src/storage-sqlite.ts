@@ -10,11 +10,9 @@ export function getDbPath(): string {
 }
 
 export function dbExists(): boolean {
-  try {
-    return Bun.file(getDbPath()).size > 0;
-  } catch {
-    return false;
-  }
+  // Bun.file(path).size returns 0 when the file doesn't exist (never throws),
+  // so a simple comparison is sufficient. No try/catch needed.
+  return Bun.file(getDbPath()).size > 0;
 }
 
 export function openDb(): Database {
@@ -144,8 +142,21 @@ export function listPartRowsSync(db: Database, messageID: string): Part[] {
 }
 
 /**
+ * Discriminated union of the JSON shapes we care about in `part.data`.
+ */
+type SearchablePartJson =
+  | { type: "text"; text?: string }
+  | { type: "tool"; tool?: string; state?: Part["state"] }
+  | { type: "file" }
+  | { type: "patch"; files?: string[] };
+
+function isSearchableType(t: unknown): t is SearchablePartJson["type"] {
+  return t === "text" || t === "tool" || t === "file" || t === "patch";
+}
+
+/**
  * Decode a raw part row into our Part shape, or null if it's a type we
- * don't search over (reasoning, step-start, etc).
+ * don't search over (reasoning, step-start, etc), or the data is malformed.
  */
 export function decodePart(row: {
   id: string;
@@ -153,39 +164,31 @@ export function decodePart(row: {
   session_id: string;
   data: string;
 }): Part | null {
-  let data: any;
+  let parsed: unknown;
   try {
-    data = JSON.parse(row.data);
+    parsed = JSON.parse(row.data);
   } catch {
     return null;
   }
 
-  const type =
-    data.type === "text"
-      ? "text"
-      : data.type === "tool"
-        ? "tool"
-        : data.type === "file"
-          ? "file"
-          : data.type === "patch"
-            ? "patch"
-            : null;
-
-  if (!type) return null;
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const raw = parsed as { type?: unknown };
+  if (!isSearchableType(raw.type)) return null;
+  const data = raw as SearchablePartJson;
 
   const part: Part = {
     id: row.id,
     messageID: row.message_id,
     sessionID: row.session_id,
-    type: type as "text" | "tool" | "file" | "patch",
+    type: data.type,
   };
 
-  if (type === "text") {
+  if (data.type === "text") {
     part.text = data.text;
-  } else if (type === "tool") {
+  } else if (data.type === "tool") {
     part.tool = data.tool;
     part.state = data.state;
-  } else if (type === "patch") {
+  } else if (data.type === "patch") {
     part.files = data.files;
   }
 

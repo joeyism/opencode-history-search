@@ -69,18 +69,26 @@ const historySearch = tool({
       throw new Error("Either 'query' or 'filePath' must be provided.");
     }
 
+    // Bound the query length to prevent runaway memory allocation if an LLM
+    // generates a pathologically large prompt. 1024 chars is far more than any
+    // reasonable search.
+    if (args.query !== undefined && args.query.length > 1024) {
+      throw new Error(
+        `'query' is too long (${args.query.length} chars; max 1024).`,
+      );
+    }
+
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
+
+    // Parse the date filter ONCE so the same range is used for both the
+    // SQL pushdown (fast path) and the post-filter (fallback path).
+    const dateRange = args.date ? parseDateFilter(args.date) : null;
 
     if (args.filePath) {
       let matches = await traceFile(projectID, args.filePath, {
         limit: args.limit,
       });
-
-      if (args.date) {
-        const dateRange = parseDateFilter(args.date);
-        matches = filterByDate(matches, dateRange);
-      }
-
+      if (dateRange) matches = filterByDate(matches, dateRange);
       return formatTraceResults(matches);
     }
 
@@ -88,6 +96,9 @@ const historySearch = tool({
     if (!args.query) {
       throw new Error("'query' is required when 'filePath' is not provided.");
     }
+
+    const startTime = dateRange?.start.getTime();
+    const endTime = dateRange?.end.getTime();
 
     let matches =
       args.mode === "fuzzy"
@@ -101,12 +112,14 @@ const historySearch = tool({
             caseSensitive: args.caseSensitive,
             limit: args.limit,
             role: args.role,
+            startTime,
+            endTime,
           });
 
-    if (args.date) {
-      const dateRange = parseDateFilter(args.date);
-      matches = filterByDate(matches, dateRange);
-    }
+    // Belt-and-suspenders: if the search path didn't honor the date range
+    // (fuzzy doesn't, regex fallback might not have the time index loaded),
+    // apply the JS-side date filter as a final pass.
+    if (dateRange) matches = filterByDate(matches, dateRange);
 
     return formatResults(matches);
   },

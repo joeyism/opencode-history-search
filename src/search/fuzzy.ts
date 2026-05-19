@@ -1,4 +1,5 @@
 import Fuse from "fuse.js";
+import type { Database } from "bun:sqlite";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts, withSqlite } from "../storage-provider";
 import type { SearchMatch } from "./keyword";
@@ -33,7 +34,7 @@ export async function searchFuzzy(
 }
 
 function searchFuzzySqlite(
-  db: any,
+  db: Database,
   projectID: string | null,
   query: string,
   options: FuzzyOptions,

@@ -13,8 +13,8 @@
   },
   "scripts": {
     "install:tool": "bun run install.ts",
-    "test": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts src/format.test.ts",
-    "test:unit": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts src/format.test.ts",
+    "test": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts src/search/fts.test.ts src/format.test.ts",
+    "test:unit": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts src/search/fts.test.ts src/format.test.ts",
     "test:integration": "bun test src/**/*.integration.test.ts test/date-filter-integration.test.ts test/global-integration.test.ts",
     "test:all": "bun run test:unit && bun run test:integration",
     "build": "bun run build.ts",

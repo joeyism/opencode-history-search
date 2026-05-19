@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import {
   ensureFts,
   searchFts,
+  searchFtsTrigram,
   escapeFtsPhrase,
   searchTitles,
 } from "./fts";
@@ -125,7 +126,7 @@ describe("FTS5 module", () => {
         `SELECT value FROM part_fts_meta WHERE key='version'`,
       )
       .get()?.value;
-    expect(version).toBe("4");
+    expect(version).toBe("5");
 
     // Watermark recorded so incremental backfill works
     const watermark = db
@@ -210,6 +211,75 @@ describe("FTS5 module", () => {
     expect(hits.length).toBe(1);
     expect(hits[0]?.id).toBe("s2");
   });
+
+  test("trigram index populated for text and tool_name only", () => {
+    const counts = db
+      .query<{ kind: string; n: number }, []>(
+        `SELECT kind, COUNT(*) n FROM part_fts_tri GROUP BY kind ORDER BY kind`,
+      )
+      .all();
+    const map = Object.fromEntries(counts.map((c) => [c.kind, c.n]));
+    expect(map.text).toBeGreaterThan(0);
+    expect(map.tool_name).toBeGreaterThan(0);
+    // tool_state and patch_file are NOT trigram-indexed (too big/noisy).
+    expect(map.tool_state).toBeUndefined();
+    expect(map.patch_file).toBeUndefined();
+  });
+
+  test("trigram fuzzy MATCH tolerates a missing letter", () => {
+    // "storage" is in p1's text; "storag" (missing 'e') should match via trigrams.
+    const hits = searchFtsTrigram(db, '"storag"', {
+      projectID: null,
+      limit: 10,
+    });
+    expect(hits.some((h) => h.part_id === "p1")).toBe(true);
+  });
+
+  test("trigram fuzzy MATCH finds substring within word", () => {
+    // "authent" is a substring of "authentication" in p4.
+    const hits = searchFtsTrigram(db, '"authent"', {
+      projectID: null,
+      limit: 10,
+    });
+    expect(hits.some((h) => h.part_id === "p4")).toBe(true);
+  });
+
+  test("trigram fuzzy MATCH respects projectID filter", () => {
+    // Insert fixture content into a second project (proj2) and search with
+    // projectID=proj1; the proj2 row must not leak across. The test schema
+    // doesn't have a `project` table (only `session.project_id`), so we just
+    // use a new project_id string directly on a session row.
+    db.query(
+      `INSERT INTO session VALUES ('s_proj2','proj2','Other proj','/mock2',1,1)`,
+    ).run();
+    db.query(
+      `INSERT INTO message VALUES ('m_proj2','s_proj2',1,1,'${JSON.stringify(
+        { role: "assistant" },
+      ).replace(/'/g, "''")}')`,
+    ).run();
+    db.query(
+      `INSERT INTO part VALUES ('p_proj2','m_proj2','s_proj2',1,1,'${JSON.stringify(
+        { type: "text", text: "storage in another project" },
+      ).replace(/'/g, "''")}')`,
+    ).run();
+
+    const scoped = searchFtsTrigram(db, '"storag"', {
+      projectID: "proj1",
+      limit: 50,
+    });
+    // proj1 has p1 with "storage". Should match.
+    expect(scoped.some((h) => h.part_id === "p1")).toBe(true);
+    // proj2's row must NOT appear in proj1-scoped search.
+    expect(scoped.some((h) => h.part_id === "p_proj2")).toBe(false);
+
+    // Global search should see both.
+    const global = searchFtsTrigram(db, '"storag"', {
+      projectID: null,
+      limit: 50,
+    });
+    expect(global.some((h) => h.part_id === "p1")).toBe(true);
+    expect(global.some((h) => h.part_id === "p_proj2")).toBe(true);
+  });
 });
 
 describe("escapeFtsPhrase", () => {
@@ -263,11 +333,15 @@ describe("triggers tolerate malformed part.data without breaking inserts", () =>
     const row = db.query(`SELECT id FROM part WHERE id='bad1'`).get();
     expect(row).toBeDefined();
 
-    // ...but NOT in part_fts (trigger silently skipped it)
+    // ...but NOT in either FTS table (trigger silently skipped on both)
     const ftsRow = db
       .query(`SELECT part_id FROM part_fts WHERE part_id='bad1'`)
       .get();
     expect(ftsRow).toBeNull();
+    const triRow = db
+      .query(`SELECT part_id FROM part_fts_tri WHERE part_id='bad1'`)
+      .get();
+    expect(triRow).toBeNull();
   });
 
   test("UPDATE of malformed data does NOT abort", () => {
@@ -286,10 +360,15 @@ describe("triggers tolerate malformed part.data without breaking inserts", () =>
     }).not.toThrow();
 
     // FTS row should be deleted (DELETE trigger part runs) but no re-insert
+    // on either table — both DELETE statements ran inside the trigger body.
     ftsRow = db
       .query(`SELECT part_id FROM part_fts WHERE part_id='good1'`)
       .get();
     expect(ftsRow).toBeNull();
+    const triRow = db
+      .query(`SELECT part_id FROM part_fts_tri WHERE part_id='good1'`)
+      .get();
+    expect(triRow).toBeNull();
   });
 
   test("DELETE removes FTS rows", () => {
@@ -301,11 +380,21 @@ describe("triggers tolerate malformed part.data without breaking inserts", () =>
       .get();
     expect(ftsRow).toBeDefined();
 
+    // Trigram table should also have a row for a 'text' part.
+    let triRow = db
+      .query(`SELECT part_id FROM part_fts_tri WHERE part_id='del1'`)
+      .get();
+    expect(triRow).toBeDefined();
+
     db.query(`DELETE FROM part WHERE id='del1'`).run();
     ftsRow = db
       .query(`SELECT part_id FROM part_fts WHERE part_id='del1'`)
       .get();
     expect(ftsRow).toBeNull();
+    triRow = db
+      .query(`SELECT part_id FROM part_fts_tri WHERE part_id='del1'`)
+      .get();
+    expect(triRow).toBeNull();
   });
 
   // F1 regression: json_each used to crash the trigger if $.files was a

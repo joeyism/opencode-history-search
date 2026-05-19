@@ -162,15 +162,22 @@ Uses regular expressions for pattern matching.
 
 ### Fuzzy Search
 
-Tolerates typos and variations using Levenshtein distance.
+Tolerates typos and substrings. On SQLite (v1.2+) this uses an FTS5 trigram
+index, so it stays fast as your history grows. The legacy JSON backend uses
+Fuse.js Levenshtein matching.
 
 ```typescript
-{ query: "storag", mode: "fuzzy", fuzzyThreshold: 0.3 }
+{ query: "storag", mode: "fuzzy" }
 // Finds: "storage" (missing letter)
 
-{ query: "ripgrap", mode: "fuzzy", fuzzyThreshold: 0.4 }
-// Finds: "ripgrep" (transposition)
+{ query: "authent", mode: "fuzzy" }
+// Finds: "authentication" (substring)
 ```
+
+Trigram matching catches most typos and partial words. It's stricter than
+Levenshtein on transpositions (e.g. `"ripgrap"` won't always reach
+`"ripgrep"`). When in doubt, try keyword search first; it's faster and more
+predictable.
 
 ## Date Filtering
 
@@ -235,22 +242,25 @@ Real-world benchmark against a 3.9 GB OpenCode DB (932 sessions, 63,640 messages
 | `the` (worst-case common)    |          378ms |   360ms |
 | `the` + `last 7 days` filter |              — |   273ms |
 | `the` + `role=user` filter   |              — |    76ms |
+| `storag` fuzzy (typo)        |           30ms |    29ms |
+| `authent` fuzzy (substring)  |           39ms |    38ms |
 
-For comparison, the same queries before the FTS5 index took 1-13+ seconds. The biggest wins are on rare-term and global searches, which previously had to scan every part row in the DB.
+For comparison, the same queries before the FTS5 index took 1-13+ seconds for keyword search and 15+ seconds for fuzzy. The biggest wins are on rare-term, fuzzy, and global searches, which previously had to scan every part row in the DB.
 
 ## FTS5 Index
 
 When the plugin first runs against a SQLite DB, it adds the following to OpenCode's `opencode.db`:
 
-- **`part_fts`** — FTS5 virtual table (plus its FTS5 shadow tables: `part_fts_data`, `part_fts_idx`, `part_fts_content`, `part_fts_docsize`, `part_fts_config`). One row per searchable piece of part content: message text, tool name + title, tool input/output blob, and one row per file path in a patch.
+- **`part_fts`** — FTS5 virtual table with the default `unicode61` tokenizer (plus its FTS5 shadow tables: `part_fts_data`, `part_fts_idx`, `part_fts_content`, `part_fts_docsize`, `part_fts_config`). Powers keyword search. One row per searchable piece of part content: message text, tool name + title, tool input/output blob, and one row per file path in a patch.
+- **`part_fts_tri`** — FTS5 virtual table with the `trigram` tokenizer (plus shadow tables). Powers fuzzy and substring search. Indexes only `text` and `tool_name` kinds (tool_state and patch_file aren't useful for fuzzy matching).
 - **`part_fts_meta`** — A two-row table tracking the FTS schema version and the highest indexed `part.rowid`. Used to detect when an incremental backfill is needed.
-- **Three `AFTER` triggers on `part`** (`part_fts_ai`, `part_fts_au`, `part_fts_ad`) that mirror inserts, updates, and deletes into `part_fts`.
+- **Three `AFTER` triggers on `part`** (`part_fts_ai`, `part_fts_au`, `part_fts_ad`) that mirror inserts, updates, and deletes into both FTS tables.
 
 **The plugin never reads or writes rows in OpenCode-owned tables.** It only adds the auxiliary tables and triggers above.
 
-**Storage overhead:** roughly 1-2% of total DB size. On a 3.9 GB DB, the index plus shadow tables consume about 55 MB. The index grows proportionally to OpenCode's message volume.
+**Storage overhead:** roughly 12-15% of total DB size on a typical install (the unicode61 index is ~10%, the trigram index adds another ~3%). On a 3.9 GB DB, the combined indexes plus shadow tables consume about 550 MB. The index grows proportionally to OpenCode's message volume.
 
-**Index build:** On first run the plugin builds the index in a single transaction. On a 200k-part DB this takes about 3 seconds with no concurrent writers, up to ~17 seconds if OpenCode is actively writing to the DB at the same time. The log message `[history-search] Built FTS5 search index in Nms (one-time setup, see README "Rollback" to remove).` confirms when this happens.
+**Index build:** On first run the plugin builds both indexes in a single transaction. On a 200k-part DB this takes about 10-15 seconds with no concurrent writers, up to ~30 seconds if OpenCode is actively writing to the DB at the same time. The log message `[history-search] Built FTS5 search index in Nms (one-time setup, see README "Rollback" to remove).` confirms when this happens.
 
 **Schema drift defense:** On every search the plugin samples the most recent text, tool, and patch row from `part` and verifies the JSON keys it depends on (`$.text`, `$.tool`, `$.files`) still exist. If OpenCode ever renames these keys in a future release, the plugin logs a warning and forces a rebuild. The rebuild itself won't fix the drift — you'd need a plugin update — but you'll see the warning instead of silently degraded search.
 
@@ -270,12 +280,13 @@ BEGIN IMMEDIATE;
   DROP TRIGGER IF EXISTS part_fts_ai;
   DROP TRIGGER IF EXISTS part_fts_au;
   DROP TRIGGER IF EXISTS part_fts_ad;
-  -- Drop the virtual table (cascades the FTS5 shadow tables).
+  -- Drop the virtual tables (cascades the FTS5 shadow tables).
   DROP TABLE IF EXISTS part_fts;
+  DROP TABLE IF EXISTS part_fts_tri;
   DROP TABLE IF EXISTS part_fts_meta;
 COMMIT;
 
--- Optional: reclaim ~55 MB on a 3.9 GB DB. Slow (single-threaded,
+-- Optional: reclaim ~550 MB on a 3.9 GB DB. Slow (single-threaded,
 -- rewrites the entire DB) and takes an EXCLUSIVE lock. Only run
 -- while OpenCode is stopped.
 -- VACUUM;
@@ -288,10 +299,10 @@ OpenCode never sees that the plugin was there.
 After the plugin has run at least once, you can confirm the index is healthy with:
 
 ```sql
--- 1) FTS table and meta table both exist
+-- 1) Both FTS tables and meta table exist
 SELECT name FROM sqlite_master
-WHERE type='table' AND name IN ('part_fts','part_fts_meta');
--- expect: part_fts, part_fts_meta
+WHERE type='table' AND name IN ('part_fts','part_fts_tri','part_fts_meta');
+-- expect: part_fts, part_fts_meta, part_fts_tri
 
 -- 2) All three triggers installed
 SELECT name FROM sqlite_master
@@ -309,11 +320,13 @@ SELECT
   (SELECT value FROM part_fts_meta WHERE key='last_rowid') AS watermark,
   (SELECT MAX(rowid)              FROM part)               AS max_rowid;
 
--- 5) FTS5 internal integrity check (no output = healthy).
+-- 5) FTS5 internal integrity check on both indexes (no output = healthy).
 INSERT INTO part_fts(part_fts) VALUES('integrity-check');
+INSERT INTO part_fts_tri(part_fts_tri) VALUES('integrity-check');
 
--- 6) Quick functional smoke test.
-SELECT COUNT(*) FROM part_fts WHERE content MATCH '"the"';
+-- 6) Quick functional smoke tests (keyword + fuzzy substring).
+SELECT COUNT(*) FROM part_fts     WHERE content MATCH '"the"';
+SELECT COUNT(*) FROM part_fts_tri WHERE content MATCH '"the"';
 ```
 
 ## Storage Structure

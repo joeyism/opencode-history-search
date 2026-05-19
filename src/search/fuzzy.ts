@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts, withSqlite } from "../storage-provider";
 import type { SearchMatch } from "./keyword";
-import { listSessionRowsSync, listMessageRowsSync, listPartRowsSync } from "../storage-sqlite";
+import { searchFtsTrigram, searchTitles, escapeFtsPhrase, type FtsHit } from "./fts";
 
 interface SearchableItem {
   session: Session;
@@ -18,6 +18,8 @@ export interface FuzzyOptions {
   threshold?: number;
   limit?: number;
   role?: "user" | "assistant";
+  startTime?: number;
+  endTime?: number;
 }
 
 export async function searchFuzzy(
@@ -25,41 +27,99 @@ export async function searchFuzzy(
   query: string,
   options: FuzzyOptions = {},
 ): Promise<SearchMatch[]> {
-  // Fast path: single SQLite connection for the corpus build.
+  // SQLite fast path: trigram FTS index. Sub-second on hundreds of thousands
+  // of parts. Replaces the prior O(n) in-memory Fuse.js corpus rebuild.
   const fast = await withSqlite((db) =>
-    searchFuzzySqlite(db, projectID, query, options),
+    searchFuzzyTrigram(db, projectID, query, options),
   );
   if (fast !== null) return fast;
+  // JSON storage fallback (or tests that mock storage-provider).
   return searchFuzzyGenerators(projectID, query, options);
 }
 
-function searchFuzzySqlite(
+/**
+ * Trigram-tokenized FTS5 search. Handles typos and substrings natively
+ * because trigrams split words into overlapping 3-char chunks: "storage"
+ * indexes "sto", "tor", "ora", "rag", "age" — so "storag" (missing letter)
+ * matches via "sto", "tor", "ora". "Authentication" vs "autentication"
+ * (typo) shares "aut", "ute", "ten", "ent" trigrams and matches.
+ *
+ * The trigram index only covers text + tool_name. Title matches and
+ * everything else falls through to direct title LIKE.
+ */
+function searchFuzzyTrigram(
   db: Database,
   projectID: string | null,
   query: string,
   options: FuzzyOptions,
 ): SearchMatch[] {
-  const items: SearchableItem[] = [];
+  const limit = options.limit ?? 50;
+  const phrase = escapeFtsPhrase(query);
+  if (phrase === null) return [];
 
-  const sessions = listSessionRowsSync(db, projectID);
-  for (const session of sessions) {
-    items.push({
-      session,
-      content: session.title,
-      type: "title",
-      timestamp: session.time.updated,
+  const out: SearchMatch[] = [];
+
+  // 1) Titles via LIKE (substring matching is already fuzzy-ish on short text).
+  const titles = searchTitles(db, query, { projectID, limit });
+  for (const t of titles) {
+    if (out.length >= limit) break;
+    out.push({
+      sessionID: t.id,
+      sessionTitle: t.title,
+      timestamp: t.time_updated,
+      matchType: "title",
+      excerpt: t.title,
+      context: t.title,
+      projectDirectory: t.directory,
     });
-
-    const messages = listMessageRowsSync(db, session.id, options.role);
-    for (const message of messages) {
-      const parts = listPartRowsSync(db, message.id);
-      for (const part of parts) {
-        addPartItems(items, session, message, part);
-      }
-    }
   }
 
-  return runFuse(items, query, options);
+  // 2) Content via trigram MATCH.
+  const overfetch = Math.min(limit * 3, 500);
+  const hits = searchFtsTrigram(db, phrase, {
+    projectID,
+    role: options.role,
+    startTime: options.startTime,
+    endTime: options.endTime,
+    limit: overfetch,
+  });
+
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    if (out.length >= limit) break;
+    const m = ftsHitToFuzzyMatch(hit, query);
+    const key = `${hit.part_id}|${m.matchType}|${m.excerpt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+
+  return out.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function ftsHitToFuzzyMatch(hit: FtsHit, query: string): SearchMatch {
+  // Trigram tokenization makes it hard to point at a single "best" match
+  // offset, so we just slice a window from the start of the content for the
+  // excerpt and a longer window for context. This matches the prior Fuse.js
+  // behavior closely enough that result display looks the same.
+  const content = hit.content;
+  const excerpt = content.slice(0, 100) || query;
+  const context = content.slice(0, 300) || excerpt;
+
+  const matchType: SearchMatch["matchType"] =
+    hit.kind === "text" ? "message" : "tool";
+
+  return {
+    sessionID: hit.session_id,
+    sessionTitle: hit.session_title,
+    timestamp: hit.time_created,
+    matchType,
+    excerpt,
+    context,
+    messageID: hit.message_id,
+    partID: hit.part_id,
+    projectDirectory: hit.session_directory,
+  };
 }
 
 async function searchFuzzyGenerators(

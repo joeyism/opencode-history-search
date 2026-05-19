@@ -48,15 +48,17 @@
  *     DROP TRIGGER IF EXISTS part_fts_au;
  *     DROP TRIGGER IF EXISTS part_fts_ad;
  *     DROP TABLE   IF EXISTS part_fts;
+ *     DROP TABLE   IF EXISTS part_fts_tri;
  *     DROP TABLE   IF EXISTS part_fts_meta;
  *   COMMIT;
- *   -- VACUUM;  -- optional, reclaims ~55 MB on a 3.9 GB DB
+ *   -- VACUUM;  -- optional, reclaims ~550 MB on a 3.9 GB DB
  */
 
 import { Database } from "bun:sqlite";
 import { getDbPath } from "../storage-sqlite";
 
 const FTS_TABLE = "part_fts";
+const TRI_TABLE = "part_fts_tri";
 // Bump when schema or trigger DDL changes. Forces a full rebuild on next
 // `ensureFts` so users with stale indexes get the fix without manual action.
 //   v1: initial single-text-only index (never shipped)
@@ -67,7 +69,11 @@ const FTS_TABLE = "part_fts";
 //       range before re-inserting, so rows already indexed by a live trigger
 //       don't end up duplicated. v3 indexes built between v3 ship and v4
 //       fix are 2x bloated; the version bump triggers a clean rebuild.
-const FTS_VERSION = 4;
+//   v5: trigram FTS5 table (part_fts_tri) for fuzzy mode. Indexes only text
+//       and tool_name content (tool_state JSON is too noisy + too big at
+//       ~232 MB; patch paths use exact match). Replaces the O(n) in-memory
+//       Fuse.js corpus rebuild that took 15+ seconds per fuzzy query.
+const FTS_VERSION = 5;
 
 // Busy timeout for the writable connection. Must comfortably exceed worst-case
 // rebuild time so OpenCode writes don't fail with SQLITE_BUSY while we're
@@ -231,9 +237,10 @@ export function ensureFts(db: Database): EnsureResult {
       `[history-search] OpenCode schema drift detected (${drift}). ` +
         `Forcing FTS rebuild; if search results look wrong, update this plugin.`,
     );
-    // Drop the FTS table so the fast-path check below fails and we fall
+    // Drop both FTS tables so the fast-path check below fails and we fall
     // through to the full rebuild branch.
     db.exec(`DROP TABLE IF EXISTS ${FTS_TABLE}`);
+    db.exec(`DROP TABLE IF EXISTS ${TRI_TABLE}`);
   }
 
   const tableExists = db
@@ -267,8 +274,13 @@ export function ensureFts(db: Database): EnsureResult {
         // index 2x per cycle (and the JS-layer dedup hides this until search
         // returns half as many distinct results as it should). Wipe any
         // existing FTS rows for the range first so backfill is idempotent.
+        // Both tables (unicode61 + trigram).
         db.query(
           `DELETE FROM ${FTS_TABLE}
+           WHERE part_id IN (SELECT id FROM part WHERE rowid >= ?)`,
+        ).run(watermark + 1);
+        db.query(
+          `DELETE FROM ${TRI_TABLE}
            WHERE part_id IN (SELECT id FROM part WHERE rowid >= ?)`,
         ).run(watermark + 1);
         backfillRange(db, watermark + 1);
@@ -317,6 +329,20 @@ function buildFts(db: Database): void {
       tokenize = 'unicode61 remove_diacritics 2'
     );
   `);
+  // Trigram index for fuzzy/substring matches. Only indexes text and
+  // tool_name (tool_state is ~232 MB and too noisy for fuzzy; patch paths
+  // are matched exactly via the unicode61 index above).
+  db.exec(`DROP TABLE IF EXISTS ${TRI_TABLE}`);
+  db.exec(`
+    CREATE VIRTUAL TABLE ${TRI_TABLE} USING fts5(
+      content,
+      kind UNINDEXED,
+      part_id UNINDEXED,
+      message_id UNINDEXED,
+      session_id UNINDEXED,
+      tokenize = 'trigram'
+    );
+  `);
   backfillRange(db, 0);
 }
 
@@ -332,7 +358,8 @@ function buildFts(db: Database): void {
  *   error). Same guard mirrored in the triggers.
  */
 function backfillRange(db: Database, startRowid: number): void {
-  // Text parts
+  // Text parts — populate BOTH the unicode61 (keyword) and trigram (fuzzy)
+  // indexes from the same source rows.
   db.exec(`
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT json_extract(data, '$.text'), 'text', id, message_id, session_id
@@ -343,10 +370,33 @@ function backfillRange(db: Database, startRowid: number): void {
       AND json_extract(data, '$.text') IS NOT NULL
       AND json_extract(data, '$.text') != ''
   `);
+  db.exec(`
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(data, '$.text'), 'text', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'text'
+      AND json_extract(data, '$.text') IS NOT NULL
+      AND json_extract(data, '$.text') != ''
+  `);
 
-  // Tool name + state title (skip blanks)
+  // Tool name + state title (skip blanks) — also indexed in both for
+  // fuzzy "find that tool I half-remember".
   db.exec(`
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')),
+      'tool_name', id, message_id, session_id
+    FROM part
+    WHERE rowid >= ${startRowid}
+      AND json_valid(data)
+      AND json_extract(data, '$.type') = 'tool'
+      AND json_extract(data, '$.tool') IS NOT NULL
+      AND trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')) != ''
+  `);
+  db.exec(`
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT
       trim(coalesce(json_extract(data, '$.tool'), '') || ' ' || coalesce(json_extract(data, '$.state.title'), '')),
       'tool_name', id, message_id, session_id
@@ -410,14 +460,25 @@ function backfillRange(db: Database, startRowid: number): void {
 const EXPECTED_TRIGGERS = ["part_fts_ai", "part_fts_ad", "part_fts_au"] as const;
 
 function insertFromPartSql(): string {
+  // Mirror every NEW row into both indexes. The trigram index gets text +
+  // tool_name only (smaller content for fuzzy); the unicode61 index gets
+  // all four kinds (keyword search has different needs).
   return `
+    -- text: both tables
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT json_extract(NEW.data, '$.text'), 'text', NEW.id, NEW.message_id, NEW.session_id
       WHERE json_valid(NEW.data)
         AND json_extract(NEW.data, '$.type') = 'text'
         AND json_extract(NEW.data, '$.text') IS NOT NULL
         AND json_extract(NEW.data, '$.text') != '';
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT json_extract(NEW.data, '$.text'), 'text', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'text'
+        AND json_extract(NEW.data, '$.text') IS NOT NULL
+        AND json_extract(NEW.data, '$.text') != '';
 
+    -- tool_name: both tables
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT
       trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')),
@@ -426,7 +487,16 @@ function insertFromPartSql(): string {
         AND json_extract(NEW.data, '$.type') = 'tool'
         AND json_extract(NEW.data, '$.tool') IS NOT NULL
         AND trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')) != '';
+    INSERT INTO ${TRI_TABLE}(content, kind, part_id, message_id, session_id)
+    SELECT
+      trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')),
+      'tool_name', NEW.id, NEW.message_id, NEW.session_id
+      WHERE json_valid(NEW.data)
+        AND json_extract(NEW.data, '$.type') = 'tool'
+        AND json_extract(NEW.data, '$.tool') IS NOT NULL
+        AND trim(coalesce(json_extract(NEW.data, '$.tool'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.title'), '')) != '';
 
+    -- tool_state: unicode61 only (too big + too noisy for fuzzy)
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT
       trim(coalesce(json_extract(NEW.data, '$.state.input'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.output'), '')),
@@ -436,6 +506,7 @@ function insertFromPartSql(): string {
         AND json_extract(NEW.data, '$.state') IS NOT NULL
         AND trim(coalesce(json_extract(NEW.data, '$.state.input'), '') || ' ' || coalesce(json_extract(NEW.data, '$.state.output'), '')) != '';
 
+    -- patch_file: unicode61 only (exact path match, fuzzy doesn't help)
     INSERT INTO ${FTS_TABLE}(content, kind, part_id, message_id, session_id)
     SELECT j.value, 'patch_file', NEW.id, NEW.message_id, NEW.session_id
       FROM json_each(
@@ -474,21 +545,24 @@ function installTriggers(db: Database): void {
     END;
   `);
 
-  // DELETE only reads OLD.id, so no json_valid guard needed.
+  // DELETE only reads OLD.id, so no json_valid guard needed. Clear both
+  // tables; either may have rows for this part.
   db.exec(`
     CREATE TRIGGER part_fts_ad AFTER DELETE ON part
     BEGIN
       DELETE FROM ${FTS_TABLE} WHERE part_id = OLD.id;
+      DELETE FROM ${TRI_TABLE} WHERE part_id = OLD.id;
     END;
   `);
 
   // UPDATE: delete-then-insert ensures correctness across type changes.
   // The DELETE uses OLD.id only (safe). The re-insert uses NEW.data, gated
-  // by json_valid + json_type='array' (safe).
+  // by json_valid + json_type='array' (safe). Both tables touched.
   db.exec(`
     CREATE TRIGGER part_fts_au AFTER UPDATE ON part
     BEGIN
       DELETE FROM ${FTS_TABLE} WHERE part_id = OLD.id;
+      DELETE FROM ${TRI_TABLE} WHERE part_id = OLD.id;
       ${insertFromPartSql()}
     END;
   `);
@@ -578,7 +652,37 @@ export function searchFts(
   query: string,
   opts: FtsQueryOptions,
 ): FtsHit[] {
-  const where: string[] = [`${FTS_TABLE}.content MATCH ?`];
+  return runFtsQuery(db, FTS_TABLE, query, opts);
+}
+
+/**
+ * Run an FTS5 MATCH query against the trigram index. Use this for
+ * substring-tolerant and typo-tolerant matching (fuzzy mode). The trigram
+ * index only covers `text` and `tool_name` kinds; tool_state and patch_file
+ * are not indexed there.
+ *
+ * Caller still wraps with `escapeFtsPhrase` so FTS5 treats input as a phrase.
+ */
+export function searchFtsTrigram(
+  db: Database,
+  query: string,
+  opts: FtsQueryOptions,
+): FtsHit[] {
+  return runFtsQuery(db, TRI_TABLE, query, opts);
+}
+
+// Constrain to the two module-private FTS table names so the only callers
+// of this helper are searchFts / searchFtsTrigram. Direct interpolation of
+// `table` into the SELECT is safe because the type prevents any other value.
+type FtsTable = typeof FTS_TABLE | typeof TRI_TABLE;
+
+function runFtsQuery(
+  db: Database,
+  table: FtsTable,
+  query: string,
+  opts: FtsQueryOptions,
+): FtsHit[] {
+  const where: string[] = [`${table}.content MATCH ?`];
   const binds: Bind[] = [query];
 
   if (opts.projectID) {
@@ -599,22 +703,20 @@ export function searchFts(
   }
   binds.push(opts.limit);
 
-  // No JOIN to `part`: the FTS row already contains the searchable content
-  // (text body, file path, tool name, etc.). Pulling 16KB+ data blobs over
-  // the FFI just to re-decode them in JS was the slow path.
+  // No JOIN to `part`: the FTS row already contains the searchable content.
   const sql = `
     SELECT
-      ${FTS_TABLE}.part_id    AS part_id,
-      ${FTS_TABLE}.message_id AS message_id,
-      ${FTS_TABLE}.session_id AS session_id,
-      ${FTS_TABLE}.content    AS content,
-      ${FTS_TABLE}.kind       AS kind,
-      m.time_created          AS time_created,
-      s.title                 AS session_title,
-      s.directory             AS session_directory
-    FROM ${FTS_TABLE}
-    JOIN message m ON m.id = ${FTS_TABLE}.message_id
-    JOIN session s ON s.id = ${FTS_TABLE}.session_id
+      ${table}.part_id    AS part_id,
+      ${table}.message_id AS message_id,
+      ${table}.session_id AS session_id,
+      ${table}.content    AS content,
+      ${table}.kind       AS kind,
+      m.time_created      AS time_created,
+      s.title             AS session_title,
+      s.directory         AS session_directory
+    FROM ${table}
+    JOIN message m ON m.id = ${table}.message_id
+    JOIN session s ON s.id = ${table}.session_id
     WHERE ${where.join(" AND ")}
     ORDER BY m.time_created DESC
     LIMIT ?
@@ -626,7 +728,7 @@ export function searchFts(
     if (!warnedQueryError) {
       warnedQueryError = true;
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[history-search] FTS query failed: ${message}`);
+      console.warn(`[history-search] FTS query failed (${table}): ${message}`);
     }
     return [];
   }

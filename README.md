@@ -20,7 +20,7 @@ Search through your OpenCode conversation history across ALL projects or within 
 - **Multiple Match Types** - Search across session titles, messages, tool invocations, and file paths
 - **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
 - **Project-Aware Results** - See which project directory each result came from
-- **Fast** - Queries complete in < 50ms even with thousands of messages
+- **Fast** - SQLite FTS5 full-text index. Sub-50ms on small histories, sub-100ms on most queries even at hundreds of thousands of parts. See [Performance](#performance) for benchmark details.
 - **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
 
 ## Installation
@@ -134,7 +134,7 @@ Things you can ask OpenCode once this tool is installed:
 | `mode`           | `"keyword"` \| `"fuzzy"`  | `"keyword"` | Search mode                                            |
 | `regex`          | boolean                   | `false`     | Treat query as regex (keyword mode only)               |
 | `caseSensitive`  | boolean                   | `false`     | Enable case-sensitive search (keyword mode only)       |
-| `fuzzyThreshold` | number                    | `0.4`       | Fuzzy match strictness 0.0-1.0 (fuzzy mode only)       |
+| `fuzzyThreshold` | number                    | `0.4`       | Fuzzy match strictness 0.0-1.0. Only applies to the JSON-storage backend (Fuse.js). Ignored on SQLite, which uses an FTS5 trigram index with its own match semantics. |
 | `date`           | string                    | _none_      | Filter by date (see [Date Filtering](#date-filtering)) |
 | `limit`          | number                    | `50`        | Maximum number of results                              |
 | `role`           | `"user"` \| `"assistant"` | _none_      | Filter by message role (omit to search both)           |
@@ -207,20 +207,114 @@ Found 3 matches in conversation history:
 
 ### Match Types
 
-| Type        | What it matches                                           |
-| ----------- | --------------------------------------------------------- |
-| `title`     | Session title                                             |
-| `message`   | Text content of a user or assistant message               |
-| `tool`      | Tool name (grep, edit, bash, read, etc.)                  |
-| `filepath`  | File paths in tool inputs/outputs or patch parts          |
+| Type        | What it matches                                                            |
+| ----------- | -------------------------------------------------------------------------- |
+| `title`     | Session title                                                              |
+| `message`   | Text content of a user or assistant message                                |
+| `tool`      | Tool name, title, or content of the tool's input/output (e.g. arguments)   |
+| `filepath`  | File paths in patch parts (`write`/`edit` operations)                      |
 
 ## How It Works
 
-1. **Storage**: Auto-detects SQLite (v1.2+) or JSON files (v1.1.x) — SQLite preferred when present
+1. **Storage**: Auto-detects SQLite (v1.2+) or JSON files (v1.1.x). SQLite is preferred when present.
 2. **Project Scoping**: By default, scopes searches to current repository via git root commit hash. Set `searchAllProjects: true` to search across all projects.
-3. **Indexing**: For fuzzy search, builds a searchable index of all content
-4. **Matching**: Applies chosen search algorithm (keyword, regex, or fuzzy)
-5. **Sorting**: Returns results sorted by timestamp (newest first)
+3. **Indexing**: On first run against a SQLite DB, the plugin builds an FTS5 full-text index over part content (text, tool names + state, patch file paths). Triggers keep the index in sync as OpenCode writes new messages. See [FTS5 Index](#fts5-index) below.
+4. **Matching**: Applies chosen search algorithm. Keyword and fuzzy modes use the FTS5 index. Regex mode falls back to a row scan.
+5. **Sorting**: Returns results sorted by timestamp (newest first).
+
+## Performance
+
+Real-world benchmark against a 3.9 GB OpenCode DB (932 sessions, 63,640 messages, 209,505 parts):
+
+| Query                        | Project-scoped | Global  |
+| ---------------------------- | -------------: | ------: |
+| `storage` (common term)      |           60ms |    60ms |
+| `kubernetes` (rare term)     |           29ms |    29ms |
+| `webhook` (rare term)        |           39ms |    38ms |
+| `authentication`             |           39ms |    43ms |
+| `the` (worst-case common)    |          378ms |   360ms |
+| `the` + `last 7 days` filter |              — |   273ms |
+| `the` + `role=user` filter   |              — |    76ms |
+
+For comparison, the same queries before the FTS5 index took 1-13+ seconds. The biggest wins are on rare-term and global searches, which previously had to scan every part row in the DB.
+
+## FTS5 Index
+
+When the plugin first runs against a SQLite DB, it adds the following to OpenCode's `opencode.db`:
+
+- **`part_fts`** — FTS5 virtual table (plus its FTS5 shadow tables: `part_fts_data`, `part_fts_idx`, `part_fts_content`, `part_fts_docsize`, `part_fts_config`). One row per searchable piece of part content: message text, tool name + title, tool input/output blob, and one row per file path in a patch.
+- **`part_fts_meta`** — A two-row table tracking the FTS schema version and the highest indexed `part.rowid`. Used to detect when an incremental backfill is needed.
+- **Three `AFTER` triggers on `part`** (`part_fts_ai`, `part_fts_au`, `part_fts_ad`) that mirror inserts, updates, and deletes into `part_fts`.
+
+**The plugin never reads or writes rows in OpenCode-owned tables.** It only adds the auxiliary tables and triggers above.
+
+**Storage overhead:** roughly 1-2% of total DB size. On a 3.9 GB DB, the index plus shadow tables consume about 55 MB. The index grows proportionally to OpenCode's message volume.
+
+**Index build:** On first run the plugin builds the index in a single transaction. On a 200k-part DB this takes about 3 seconds with no concurrent writers, up to ~17 seconds if OpenCode is actively writing to the DB at the same time. The log message `[history-search] Built FTS5 search index in Nms (one-time setup, see README "Rollback" to remove).` confirms when this happens.
+
+**Schema drift defense:** On every search the plugin samples the most recent text, tool, and patch row from `part` and verifies the JSON keys it depends on (`$.text`, `$.tool`, `$.files`) still exist. If OpenCode ever renames these keys in a future release, the plugin logs a warning and forces a rebuild. The rebuild itself won't fix the drift — you'd need a plugin update — but you'll see the warning instead of silently degraded search.
+
+**Trigger safety:** The triggers cannot abort an OpenCode write. Every `json_extract` is guarded by `json_valid(NEW.data)`, and the `json_each` over `$.files` is wrapped in a `CASE WHEN json_type(...,'$.files')='array'` check. A future OpenCode bug that writes non-JSON or non-array data to `part.data` will be silently skipped by the trigger instead of crashing the host INSERT. Verified by tests.
+
+### Rollback
+
+If you uninstall the plugin and want to remove the FTS index and triggers:
+
+```sql
+-- Safe to run while OpenCode is running.
+-- BEGIN IMMEDIATE waits politely for any in-flight writer.
+PRAGMA busy_timeout = 15000;
+BEGIN IMMEDIATE;
+  -- Drop triggers FIRST so no in-flight INSERT/UPDATE/DELETE
+  -- writes to a table that's about to disappear.
+  DROP TRIGGER IF EXISTS part_fts_ai;
+  DROP TRIGGER IF EXISTS part_fts_au;
+  DROP TRIGGER IF EXISTS part_fts_ad;
+  -- Drop the virtual table (cascades the FTS5 shadow tables).
+  DROP TABLE IF EXISTS part_fts;
+  DROP TABLE IF EXISTS part_fts_meta;
+COMMIT;
+
+-- Optional: reclaim ~55 MB on a 3.9 GB DB. Slow (single-threaded,
+-- rewrites the entire DB) and takes an EXCLUSIVE lock. Only run
+-- while OpenCode is stopped.
+-- VACUUM;
+```
+
+OpenCode never sees that the plugin was there.
+
+### Verification
+
+After the plugin has run at least once, you can confirm the index is healthy with:
+
+```sql
+-- 1) FTS table and meta table both exist
+SELECT name FROM sqlite_master
+WHERE type='table' AND name IN ('part_fts','part_fts_meta');
+-- expect: part_fts, part_fts_meta
+
+-- 2) All three triggers installed
+SELECT name FROM sqlite_master
+WHERE type='trigger' AND name LIKE 'part_fts_%'
+ORDER BY name;
+-- expect: part_fts_ad, part_fts_ai, part_fts_au
+
+-- 3) Schema version and watermark
+SELECT key, value FROM part_fts_meta;
+-- expect a `version` row and a `last_rowid` row
+
+-- 4) Index covers most of `part`. The watermark vs MAX(rowid)
+--    gap will close on the next ensureFts() call.
+SELECT
+  (SELECT value FROM part_fts_meta WHERE key='last_rowid') AS watermark,
+  (SELECT MAX(rowid)              FROM part)               AS max_rowid;
+
+-- 5) FTS5 internal integrity check (no output = healthy).
+INSERT INTO part_fts(part_fts) VALUES('integrity-check');
+
+-- 6) Quick functional smoke test.
+SELECT COUNT(*) FROM part_fts WHERE content MATCH '"the"';
+```
 
 ## Storage Structure
 
@@ -261,11 +355,13 @@ src/
 ├── index.ts                  # Tool definition & main entry
 ├── format.ts                 # Output formatting
 ├── storage.ts                # JSON storage backend (v1.1.x)
-├── storage-sqlite.ts         # SQLite storage backend (v1.2+)
-├── storage-provider.ts       # Auto-detects backend, unified API
+├── storage-sqlite.ts         # SQLite storage backend (v1.2+) + shared sync helpers
+├── storage-provider.ts       # Auto-detects backend, unified API, ensureFtsOnce()
 └── search/
-    ├── keyword.ts            # Keyword & regex search
+    ├── fts.ts                # FTS5 index, triggers, watermark, drift defense
+    ├── keyword.ts            # Keyword & regex search (uses FTS5 when available)
     ├── fuzzy.ts              # Fuzzy search
+    ├── file-trace.ts         # File modification tracking
     └── date-filter.ts        # Date filtering
 ```
 
@@ -276,5 +372,6 @@ MIT
 ## Acknowledgments
 
 - Built for [OpenCode](https://opencode.ai)
-- Uses [Fuse.js](https://fusejs.io/) for fuzzy search
+- Uses SQLite [FTS5](https://www.sqlite.org/fts5.html) (unicode61 + trigram tokenizers) for keyword and fuzzy search on SQLite-backed installs
+- Uses [Fuse.js](https://fusejs.io/) for fuzzy search on the legacy JSON storage backend
 - Powered by [Bun](https://bun.sh)

@@ -1,7 +1,8 @@
 import Fuse from "fuse.js";
 import type { Session, Message, Part } from "../storage-provider";
-import { listSessions, listMessages, listParts } from "../storage-provider";
+import { listSessions, listMessages, listParts, withSqlite } from "../storage-provider";
 import type { SearchMatch } from "./keyword";
+import { listSessionRowsSync, listMessageRowsSync, listPartRowsSync } from "../storage-sqlite";
 
 interface SearchableItem {
   session: Session;
@@ -12,24 +13,63 @@ interface SearchableItem {
   timestamp: number;
 }
 
+export interface FuzzyOptions {
+  threshold?: number;
+  limit?: number;
+  role?: "user" | "assistant";
+}
+
 export async function searchFuzzy(
   projectID: string | null,
   query: string,
-  options: {
-    threshold?: number; // 0.0 = exact, 1.0 = anything (default: 0.4)
-    limit?: number;
-    role?: "user" | "assistant";
-  } = {},
+  options: FuzzyOptions = {},
 ): Promise<SearchMatch[]> {
-  const threshold = options.threshold ?? 0.4;
-  const limit = options.limit ?? 50;
+  // Fast path: single SQLite connection for the corpus build.
+  const fast = await withSqlite((db) =>
+    searchFuzzySqlite(db, projectID, query, options),
+  );
+  if (fast !== null) return fast;
+  return searchFuzzyGenerators(projectID, query, options);
+}
 
-  // Build searchable index
+function searchFuzzySqlite(
+  db: any,
+  projectID: string | null,
+  query: string,
+  options: FuzzyOptions,
+): SearchMatch[] {
+  const items: SearchableItem[] = [];
+
+  const sessions = listSessionRowsSync(db, projectID);
+  for (const session of sessions) {
+    items.push({
+      session,
+      content: session.title,
+      type: "title",
+      timestamp: session.time.updated,
+    });
+
+    const messages = listMessageRowsSync(db, session.id, options.role);
+    for (const message of messages) {
+      const parts = listPartRowsSync(db, message.id);
+      for (const part of parts) {
+        addPartItems(items, session, message, part);
+      }
+    }
+  }
+
+  return runFuse(items, query, options);
+}
+
+async function searchFuzzyGenerators(
+  projectID: string | null,
+  query: string,
+  options: FuzzyOptions,
+): Promise<SearchMatch[]> {
   const items: SearchableItem[] = [];
 
   try {
     for await (const session of listSessions(projectID)) {
-      // Index session title
       items.push({
         session,
         content: session.title,
@@ -37,91 +77,102 @@ export async function searchFuzzy(
         timestamp: session.time.updated,
       });
 
-      // Index messages
       try {
         for await (const message of listMessages(session.id, options.role)) {
           try {
             for await (const part of listParts(message.id)) {
-              if (part.type === "text" && part.text) {
-                items.push({
-                  session,
-                  content: part.text,
-                  type: "message",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created,
-                });
-              }
-
-              if (part.type === "tool" && part.tool) {
-                items.push({
-                  session,
-                  content: part.tool + " " + (part.state?.title || ""),
-                  type: "tool",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created,
-                });
-              }
-
-              // Index file paths from tool inputs/outputs
-              if (part.type === "tool" && part.state) {
-                const inputStr = JSON.stringify(part.state.input || {});
-                const outputStr = part.state.output || "";
-                const combined = inputStr + " " + outputStr;
-
-                // Extract file path patterns
-                const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
-                if (pathMatches) {
-                  for (const path of pathMatches) {
-                    items.push({
-                      session,
-                      content: path,
-                      type: "filepath",
-                      messageID: message.id,
-                      partID: part.id,
-                      timestamp: message.time.created,
-                    });
-                  }
-                }
-              }
-
-              // Index file paths from patch parts
-              if (part.type === "patch" && part.files) {
-                for (const filePath of part.files) {
-                  items.push({
-                    session,
-                    content: filePath,
-                    type: "filepath",
-                    messageID: message.id,
-                    partID: part.id,
-                    timestamp: message.time.created,
-                  });
-                }
-              }
+              addPartItems(items, session, message, part);
             }
           } catch {
-            // Skip corrupt part files
             continue;
           }
         }
       } catch {
-        // Skip sessions with missing message directory
         continue;
       }
     }
   } catch {
-    // Handle missing sessions directory
     return [];
   }
 
-  // Perform fuzzy search
+  return runFuse(items, query, options);
+}
+
+function addPartItems(
+  items: SearchableItem[],
+  session: Session,
+  message: Message,
+  part: Part,
+): void {
+  if (part.type === "text" && part.text) {
+    items.push({
+      session,
+      content: part.text,
+      type: "message",
+      messageID: message.id,
+      partID: part.id,
+      timestamp: message.time.created,
+    });
+  }
+
+  if (part.type === "tool" && part.tool) {
+    items.push({
+      session,
+      content: part.tool + " " + (part.state?.title || ""),
+      type: "tool",
+      messageID: message.id,
+      partID: part.id,
+      timestamp: message.time.created,
+    });
+  }
+
+  if (part.type === "tool" && part.state) {
+    const inputStr = JSON.stringify(part.state.input || {});
+    const outputStr = part.state.output || "";
+    const combined = inputStr + " " + outputStr;
+    const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
+    if (pathMatches) {
+      for (const p of pathMatches) {
+        items.push({
+          session,
+          content: p,
+          type: "filepath",
+          messageID: message.id,
+          partID: part.id,
+          timestamp: message.time.created,
+        });
+      }
+    }
+  }
+
+  if (part.type === "patch" && part.files) {
+    for (const filePath of part.files) {
+      items.push({
+        session,
+        content: filePath,
+        type: "filepath",
+        messageID: message.id,
+        partID: part.id,
+        timestamp: message.time.created,
+      });
+    }
+  }
+}
+
+function runFuse(
+  items: SearchableItem[],
+  query: string,
+  options: FuzzyOptions,
+): SearchMatch[] {
+  const threshold = options.threshold ?? 0.4;
+  const limit = options.limit ?? 50;
+
   const fuse = new Fuse(items, {
     keys: ["content"],
     threshold,
     includeScore: true,
     includeMatches: true,
-    ignoreLocation: true, // Don't bias toward beginning of string
+    ignoreLocation: true,
     minMatchCharLength: 2,
   });
 
@@ -132,12 +183,10 @@ export async function searchFuzzy(
       const matchedText = result.matches?.[0]?.value || result.item.content;
       const matchIndex = result.matches?.[0]?.indices?.[0]?.[0] || 0;
 
-      // Extract context around the match
       const contextStart = Math.max(0, matchIndex - 100);
       const contextEnd = Math.min(matchedText.length, matchIndex + 200);
       const context = matchedText.slice(contextStart, contextEnd);
 
-      // Extract excerpt (the matched portion)
       const excerptStart = Math.max(0, matchIndex - 20);
       const excerptEnd = Math.min(matchedText.length, matchIndex + 80);
       const excerpt = matchedText.slice(excerptStart, excerptEnd);

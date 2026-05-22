@@ -241,7 +241,8 @@ async function searchKeyword(projectID, query, options = {}) {
         timestamp: session.time.updated,
         matchType: "title",
         excerpt: session.title,
-        context: session.title
+        context: session.title,
+        projectDirectory: session.directory
       });
       if (results.length >= limit)
         break;
@@ -2069,11 +2070,11 @@ var historySearch = tool({
     return formatResults(matches);
   }
 });
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input, _options) => ({
+var plugin = async (_input, _options) => ({
   tool: { "history-search": historySearch }
 });
-var src_default = historySearch;
+plugin.id = "opencode-history-search";
+var src_default = plugin;
 export {
   src_default as default
 };

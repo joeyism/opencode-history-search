@@ -111,9 +111,9 @@ const historySearch = tool({
     return formatResults(matches);
   },
 });
-(historySearch as any).id = "opencode-history-search";
-(historySearch as any).server = async (_input?: unknown, _options?: unknown) => ({
+const plugin = async (_input?: unknown, _options?: unknown) => ({
   tool: { "history-search": historySearch },
 });
+(plugin as any).id = "opencode-history-search";
 
-export default historySearch;
+export default plugin;

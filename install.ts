@@ -7,7 +7,8 @@ import { homedir } from "os";
 const TOOL_DESCRIPTION = `Search through past conversation histories.
 
 Parameters:
-- query: Search term (keyword, regex, or fuzzy). Required unless filePath provided.
+- query: Search term (keyword, regex, or fuzzy). Required unless filePath or list provided.
+- list: boolean — set to true to list ALL sessions grouped by folder with per-folder counts, newest-first. Ignores query/filePath/mode/regex/fuzzy/role. Respects searchAllProjects, date, and limit. Default: false.
 - searchAllProjects: boolean — set to true to search ALL projects on this machine. Default: false (current repo only).
 - filePath: Trace which sessions modified a specific file path.
 - mode: "keyword" (default) or "fuzzy" search.
@@ -31,6 +32,8 @@ Examples:
 - "Search for 'storag' using fuzzy mode" (uses mode: "fuzzy")
 - "Find conversations about authentication globally" (uses searchAllProjects: true)
 - "Which sessions modified src/storage.ts?" (uses filePath)
+- "List all my sessions grouped by folder" (uses list: true, searchAllProjects: true)
+- "Show my sessions in this repo from the last 7 days" (uses list: true, date: "last 7 days")
 
 Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files).`;
 

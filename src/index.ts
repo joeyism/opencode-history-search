@@ -1,19 +1,26 @@
 import { tool } from "@opencode-ai/plugin";
-import { getCurrentProjectID } from "./storage-provider";
+import { getCurrentProjectID, listSessions } from "./storage-provider";
 import { searchKeyword } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
 import { parseDateFilter, filterByDate } from "./search/date-filter";
 import { traceFile } from "./search/file-trace";
-import { formatResults, formatTraceResults } from "./format";
+import { formatResults, formatTraceResults, formatListResults } from "./format";
+import type { Session } from "./storage";
 
 const historySearch = tool({
-  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
+  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering. Use list=true to browse all sessions grouped by folder with per-folder counts (ignores query/filePath).`,
 
   args: {
     query: tool.schema
       .string()
       .optional()
-      .describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
+      .describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or list is provided."),
+    list: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set to true to list sessions grouped by folder with per-folder counts, newest-first. Ignores query, filePath, mode, regex, fuzzy, and role. Respects searchAllProjects, date, and limit (default: 50). Counts reflect the returned (possibly limited) sessions.",
+      ),
     filePath: tool.schema
       .string()
       .optional()
@@ -65,11 +72,36 @@ const historySearch = tool({
   },
 
   async execute(args) {
-    if (!args.query && !args.filePath) {
-      throw new Error("Either 'query' or 'filePath' must be provided.");
+    if (!args.list && !args.query && !args.filePath) {
+      throw new Error("Either 'query', 'filePath', or 'list' must be provided.");
     }
 
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
+
+    // List mode: ignore query/filePath/fuzzy/regex and return a folder-grouped
+    // overview of sessions. Honors searchAllProjects, date, and limit.
+    if (args.list) {
+      const sessions: Session[] = [];
+      for await (const session of listSessions(projectID)) {
+        sessions.push(session);
+      }
+
+      let filtered = sessions;
+      if (args.date) {
+        const dateRange = parseDateFilter(args.date);
+        filtered = filterByDate(
+          sessions.map((s) => ({ ...s, timestamp: s.time.updated })),
+          dateRange,
+        );
+      }
+
+      // Newest-first, then cap by limit (default 50) to match search behaviour.
+      filtered.sort((a, b) => b.time.updated - a.time.updated);
+      const limit = args.limit ?? 50;
+      const capped = filtered.slice(0, limit);
+
+      return formatListResults(capped);
+    }
 
     if (args.filePath) {
       let matches = await traceFile(projectID, args.filePath, {

@@ -241,7 +241,8 @@ async function searchKeyword(projectID, query, options = {}) {
         timestamp: session.time.updated,
         matchType: "title",
         excerpt: session.title,
-        context: session.title
+        context: session.title,
+        projectDirectory: session.directory
       });
       if (results.length >= limit)
         break;
@@ -1966,6 +1967,54 @@ async function traceFile(projectID, filePath, options) {
 }
 
 // src/format.ts
+var LIST_TITLE_MAX = 60;
+function truncateTitle(title) {
+  const clean = (title || "(untitled)").trim() || "(untitled)";
+  if (clean.length <= LIST_TITLE_MAX)
+    return clean;
+  return clean.slice(0, LIST_TITLE_MAX - 1).trimEnd() + "\u2026";
+}
+function formatLocalTimestamp(millis) {
+  const d = new Date(millis);
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${date} ${time}`;
+}
+function formatListResults(sessions) {
+  if (sessions.length === 0) {
+    return "No sessions found.";
+  }
+  const groups = new Map;
+  for (const session of sessions) {
+    const dir = session.directory || "(unknown directory)";
+    const existing = groups.get(dir);
+    if (existing) {
+      existing.push(session);
+    } else {
+      groups.set(dir, [session]);
+    }
+  }
+  const folders = Array.from(groups.entries()).map(([directory, items]) => {
+    items.sort((a, b) => b.time.updated - a.time.updated);
+    const mostRecent = items[0]?.time.updated ?? 0;
+    return { directory, items, mostRecent };
+  });
+  folders.sort((a, b) => b.mostRecent - a.mostRecent);
+  const lines = [];
+  for (const folder of folders) {
+    const count = folder.items.length;
+    const plural = count === 1 ? "session" : "sessions";
+    lines.push(`== ${folder.directory}  (${count} ${plural}) ==`);
+    for (const session of folder.items) {
+      const ts = formatLocalTimestamp(session.time.updated);
+      const title = truncateTitle(session.title);
+      lines.push(`  ${ts}    ${title}  ${session.id}`);
+    }
+  }
+  return lines.join(`
+`);
+}
 function formatResults(matches) {
   if (matches.length === 0) {
     return "No matches found in conversation history.";
@@ -2021,9 +2070,10 @@ function formatTraceResults(matches) {
 
 // src/index.ts
 var historySearch = tool({
-  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
+  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering. Use list=true to browse all sessions grouped by folder with per-folder counts (ignores query/filePath).`,
   args: {
-    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
+    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or list is provided."),
+    list: tool.schema.boolean().optional().describe("Set to true to list ALL sessions grouped by folder with per-folder counts, newest-first. Ignores query, filePath, mode, regex, fuzzy, and role. Respects searchAllProjects, date, and limit. Use when the user wants an overview of their sessions, e.g. 'list my sessions' or 'show all my conversations by folder'."),
     filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
     searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on your machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
     mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
@@ -2035,10 +2085,25 @@ var historySearch = tool({
     role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
   async execute(args) {
-    if (!args.query && !args.filePath) {
-      throw new Error("Either 'query' or 'filePath' must be provided.");
+    if (!args.list && !args.query && !args.filePath) {
+      throw new Error("Either 'query', 'filePath', or 'list' must be provided.");
     }
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
+    if (args.list) {
+      const sessions = [];
+      for await (const session of listSessions2(projectID)) {
+        sessions.push(session);
+      }
+      let filtered = sessions;
+      if (args.date) {
+        const dateRange = parseDateFilter(args.date);
+        filtered = filterByDate(sessions.map((s) => ({ ...s, timestamp: s.time.updated })), dateRange);
+      }
+      filtered.sort((a, b) => b.time.updated - a.time.updated);
+      const limit = args.limit ?? 50;
+      const capped = filtered.slice(0, limit);
+      return formatListResults(capped);
+    }
     if (args.filePath) {
       let matches2 = await traceFile(projectID, args.filePath, {
         limit: args.limit

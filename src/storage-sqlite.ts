@@ -21,6 +21,14 @@ function openDb(): Database {
   return new Database(getDbPath(), { readonly: true });
 }
 
+function parseJson(value: string): unknown | null {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 export async function* listSessionsSqlite(
   projectID: string | null,
   db?: Database,
@@ -104,10 +112,12 @@ export async function* listMessagesSqlite(
 
 export async function* listPartsSqlite(
   messageID: string,
+  db?: Database,
 ): AsyncGenerator<Part> {
-  const db = openDb();
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db
+    const rows = _db
       .query(
         `SELECT id, message_id, session_id, data
          FROM part WHERE message_id = ?
@@ -121,7 +131,8 @@ export async function* listPartsSqlite(
     }>;
 
     for (const row of rows) {
-      const data = JSON.parse(row.data);
+      const data = parseJson(row.data) as { [key: string]: any } | null;
+      if (!data) continue;
 
       // Map SQLite part types to our interface types
       const type =
@@ -156,6 +167,6 @@ export async function* listPartsSqlite(
       yield part;
     }
   } finally {
-    db.close();
+    if (shouldClose) _db.close();
   }
 }

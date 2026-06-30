@@ -22,6 +22,13 @@ function dbExists() {
 function openDb() {
   return new Database(getDbPath(), { readonly: true });
 }
+function parseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
 async function* listSessionsSqlite(projectID, db) {
   const shouldClose = db === undefined;
   const _db = db ?? openDb();
@@ -67,14 +74,17 @@ async function* listMessagesSqlite(sessionID, role) {
     db.close();
   }
 }
-async function* listPartsSqlite(messageID) {
-  const db = openDb();
+async function* listPartsSqlite(messageID, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, message_id, session_id, data
+    const rows = _db.query(`SELECT id, message_id, session_id, data
          FROM part WHERE message_id = ?
          ORDER BY time_created ASC`).all(messageID);
     for (const row of rows) {
-      const data = JSON.parse(row.data);
+      const data = parseJson(row.data);
+      if (!data)
+        continue;
       const type = data.type === "text" ? "text" : data.type === "tool" ? "tool" : data.type === "file" ? "file" : data.type === "patch" ? "patch" : null;
       if (!type)
         continue;
@@ -95,7 +105,8 @@ async function* listPartsSqlite(messageID) {
       yield part;
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
 
@@ -241,7 +252,8 @@ async function searchKeyword(projectID, query, options = {}) {
         timestamp: session.time.updated,
         matchType: "title",
         excerpt: session.title,
-        context: session.title
+        context: session.title,
+        projectDirectory: session.directory
       });
       if (results.length >= limit)
         break;

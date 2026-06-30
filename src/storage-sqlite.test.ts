@@ -46,6 +46,7 @@ describe("SQLite storage schema compatibility", () => {
     db.run(`INSERT INTO part VALUES ('part_002', 'msg_002', 'ses_001', 1706745601000, 1706745601000, '${toolPart}')`);
     db.run(`INSERT INTO part VALUES ('part_003', 'msg_002', 'ses_001', 1706745602000, 1706745602000, '${patchPart}')`);
     db.run(`INSERT INTO part VALUES ('part_004', 'msg_002', 'ses_001', 1706745603000, 1706745603000, '${reasoningPart}')`);
+    db.run(`INSERT INTO part VALUES ('part_005', 'msg_002', 'ses_001', 1706745604000, 1706745604000, '')`);
   });
 
   afterAll(() => {
@@ -142,6 +143,15 @@ describe("SQLite storage schema compatibility", () => {
       for (let i = 0; i < sessions.length - 1; i++) {
         expect(sessions[i]!.time.updated).toBeGreaterThanOrEqual(sessions[i + 1]!.time.updated);
       }
+    });
+
+    test("listPartsSqlite skips malformed part JSON", async () => {
+      const { listPartsSqlite } = await import("./storage-sqlite");
+      const parts = [];
+      for await (const part of listPartsSqlite("msg_002", db)) {
+        parts.push(part);
+      }
+      expect(parts.map((part) => part.id)).toEqual(["part_002", "part_003"]);
     });
   });
 });

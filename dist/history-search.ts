@@ -2253,11 +2253,11 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     return formatResults(matches);
   }
 });
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input, _options) => ({
+var plugin = async (_input, _options) => ({
   tool: { "history-search": historySearch }
 });
-var src_default = historySearch;
+plugin.id = "opencode-history-search";
+var src_default = plugin;
 export {
   src_default as default
 };

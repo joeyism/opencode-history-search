@@ -15,6 +15,9 @@ describe("fuzzy search (unit tests with mocks)", () => {
       listParts: mockListParts,
       getStorageDir: async () => "/mock/storage",
       getCurrentProjectID: async () => MOCK_PROJECT_ID,
+      // Force fallthrough to the generator path so the mock generators above
+      // are exercised (instead of the real SQLite DB).
+      withSqlite: async () => null,
     }));
   });
 

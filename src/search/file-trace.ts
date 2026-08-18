@@ -22,9 +22,10 @@ export function traceFileSqlite(
   options?: TraceFileOptions
 ): FileTraceResult[] {
   const normalizedQuery = queryPath.replace(/\\/g, "/");
-  const isExactPath = normalizedQuery.includes("/");
 
-  // Use broad SQL LIKE matching, then refine to exact/basename rules in TypeScript.
+  // Use broad SQL LIKE matching, then refine to suffix rules in TypeScript
+  // via isMatch (matches both basename queries like "auth.ts" and relative
+  // path queries like "src/auth.ts" against absolute filepaths).
   const likePattern = `%${normalizedQuery}%`;
 
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
@@ -99,7 +100,7 @@ export function traceFileSqlite(
     let matchedPath: string | null = null;
     
     if (row.source_priority === 0 && row.matched_file_path_tool) {
-      if (isMatch(row.matched_file_path_tool, normalizedQuery, isExactPath)) {
+      if (isMatch(row.matched_file_path_tool, normalizedQuery)) {
         matchedPath = row.matched_file_path_tool;
       }
     } else if (row.source_priority === 1 && row.matched_files_patch) {
@@ -107,7 +108,7 @@ export function traceFileSqlite(
         const parsed = JSON.parse(row.matched_files_patch);
         if (Array.isArray(parsed.files)) {
           for (const f of parsed.files) {
-            if (isMatch(f, normalizedQuery, isExactPath)) {
+            if (isMatch(f, normalizedQuery)) {
               matchedPath = f;
               break;
             }
@@ -185,10 +186,15 @@ export function traceFileSqlite(
   return results.slice(0, limit);
 }
 
-function isMatch(path: string, query: string, isExact: boolean): boolean {
-  if (isExact) {
-    return path === query;
-  }
+function isMatch(path: string, query: string): boolean {
+  // The stored filepath from edit/write tool calls is always absolute
+  // (e.g. "/Users/me/project/src/auth.ts"). The query is usually a
+  // basename ("auth.ts") or a project-relative path ("src/auth.ts"),
+  // per the README examples. Match when:
+  //   * the stored path equals the query exactly, OR
+  //   * the stored path ends with "/query"
+  // The slash prefix on the suffix check avoids false positives like a
+  // query of "auth.ts" matching "fake-auth.ts" or "src/oauth.ts".
   return path === query || path.endsWith(`/${query}`);
 }
 

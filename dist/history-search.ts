@@ -120,9 +120,6 @@ async function* listPartsSqlite(messageID) {
 }
 var init_storage_sqlite = () => {};
 
-// src/index.ts
-import { tool } from "@opencode-ai/plugin";
-
 // src/storage-provider.ts
 init_storage_sqlite();
 
@@ -2177,7 +2174,177 @@ function formatMultitermResults(matches) {
 `);
 }
 
+// src/search-process.ts
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { basename, join } from "path";
+import { fileURLToPath } from "url";
+var SEARCH_PROCESS_ARG = "--opencode-history-search-process";
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    };
+  }
+  return { name: "Error", message: String(error) };
+}
+function deserializeError(error) {
+  const deserialized = new Error(error.message);
+  deserialized.name = error.name;
+  deserialized.stack = error.stack;
+  return deserialized;
+}
+function scriptPath(scriptUrl) {
+  if (scriptUrl instanceof URL || scriptUrl.startsWith("file:")) {
+    return fileURLToPath(scriptUrl);
+  }
+  return scriptUrl;
+}
+function abortError(signal) {
+  if (signal.reason instanceof Error)
+    return signal.reason;
+  const error = new Error(typeof signal.reason === "string" ? signal.reason : "History search aborted");
+  error.name = "AbortError";
+  return error;
+}
+function findBunExecutable() {
+  const fromPath = Bun.which("bun");
+  if (fromPath)
+    return fromPath;
+  const executableName = process.platform === "win32" ? "bun.exe" : "bun";
+  if (basename(process.execPath).toLowerCase() === executableName) {
+    return process.execPath;
+  }
+  const installRoots = [process.env.BUN_INSTALL, join(homedir(), ".bun")];
+  for (const root of installRoots) {
+    if (!root)
+      continue;
+    const candidate = join(root, "bin", executableName);
+    if (existsSync(candidate))
+      return candidate;
+  }
+  return null;
+}
+function isSearchProcess() {
+  return process.argv.includes(SEARCH_PROCESS_ARG);
+}
+async function serveSearchProcess(executeSearch) {
+  let response;
+  try {
+    const request = JSON.parse(await Bun.stdin.text());
+    if (request.type !== "search") {
+      throw new Error("Invalid history search process request");
+    }
+    response = { type: "result", value: await executeSearch(request.args) };
+  } catch (error) {
+    response = { type: "error", error: serializeError(error) };
+  }
+  await Bun.write(Bun.stdout, JSON.stringify(response));
+}
+async function runSearchInProcess(args, scriptUrl, signal) {
+  if (signal?.aborted)
+    throw abortError(signal);
+  const bunPath = findBunExecutable();
+  if (!bunPath) {
+    throw new Error("Could not find a Bun executable; add bun to PATH or set BUN_INSTALL");
+  }
+  const proc = Bun.spawn({
+    cmd: [bunPath, scriptPath(scriptUrl), SEARCH_PROCESS_ARG],
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    signal
+  });
+  const request = { type: "search", args };
+  try {
+    proc.stdin.write(JSON.stringify(request));
+    proc.stdin.end();
+  } catch (error) {
+    proc.kill();
+    throw error;
+  }
+  const [output, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited
+  ]);
+  if (signal?.aborted)
+    throw abortError(signal);
+  if (exitCode !== 0) {
+    const details = stderr.trim();
+    throw new Error(details ? `History search process failed: ${details}` : `History search process exited with code ${exitCode}`);
+  }
+  let response;
+  try {
+    response = JSON.parse(output);
+  } catch {
+    throw new Error("History search process returned an invalid response");
+  }
+  if (response.type === "result")
+    return response.value;
+  throw deserializeError(response.error);
+}
+
 // src/index.ts
+async function executeSearch(args) {
+  if (!args.query && !args.filePath && !args.terms) {
+    throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  }
+  if (args.terms !== undefined) {
+    if (!Array.isArray(args.terms) || args.terms.length === 0) {
+      throw new Error("'terms' must be a non-empty array of strings.");
+    }
+    if (args.terms.length === 1) {
+      args.query = args.terms[0];
+    } else {
+      const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
+      let matches2 = await searchMultiterm(projectID2, args.terms, {
+        limit: args.limit
+      });
+      if (args.date) {
+        const dateRange = parseDateFilter(args.date);
+        matches2 = filterByDate(matches2, dateRange);
+      }
+      return formatMultitermResults(matches2);
+    }
+  }
+  const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
+  if (args.filePath) {
+    let matches2 = await traceFile(projectID, args.filePath, {
+      limit: args.limit
+    });
+    if (args.date) {
+      const dateRange = parseDateFilter(args.date);
+      matches2 = filterByDate(matches2, dateRange);
+    }
+    return formatTraceResults(matches2);
+  }
+  if (!args.query) {
+    throw new Error("'query' is required when 'filePath' is not provided.");
+  }
+  let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
+    threshold: args.fuzzyThreshold,
+    limit: args.limit,
+    role: args.role
+  }) : await searchKeyword(projectID, args.query, {
+    regex: args.regex,
+    caseSensitive: args.caseSensitive,
+    limit: args.limit,
+    role: args.role
+  });
+  if (args.date) {
+    const dateRange = parseDateFilter(args.date);
+    matches = filterByDate(matches, dateRange);
+  }
+  return formatResults(matches);
+}
+if (isSearchProcess()) {
+  await serveSearchProcess(executeSearch);
+  process.exit(0);
+}
+var { tool } = await import("@opencode-ai/plugin");
 var historySearch = tool({
   description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
 
@@ -2200,57 +2367,8 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
     role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
-  async execute(args) {
-    if (!args.query && !args.filePath && !args.terms) {
-      throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
-    }
-    if (args.terms !== undefined) {
-      if (!Array.isArray(args.terms) || args.terms.length === 0) {
-        throw new Error("'terms' must be a non-empty array of strings.");
-      }
-      if (args.terms.length === 1) {
-        args.query = args.terms[0];
-      } else {
-        const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
-        let matches2 = await searchMultiterm(projectID2, args.terms, {
-          limit: args.limit
-        });
-        if (args.date) {
-          const dateRange = parseDateFilter(args.date);
-          matches2 = filterByDate(matches2, dateRange);
-        }
-        return formatMultitermResults(matches2);
-      }
-    }
-    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
-    if (args.filePath) {
-      let matches2 = await traceFile(projectID, args.filePath, {
-        limit: args.limit
-      });
-      if (args.date) {
-        const dateRange = parseDateFilter(args.date);
-        matches2 = filterByDate(matches2, dateRange);
-      }
-      return formatTraceResults(matches2);
-    }
-    if (!args.query) {
-      throw new Error("'query' is required when 'filePath' is not provided.");
-    }
-    let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
-      threshold: args.fuzzyThreshold,
-      limit: args.limit,
-      role: args.role
-    }) : await searchKeyword(projectID, args.query, {
-      regex: args.regex,
-      caseSensitive: args.caseSensitive,
-      limit: args.limit,
-      role: args.role
-    });
-    if (args.date) {
-      const dateRange = parseDateFilter(args.date);
-      matches = filterByDate(matches, dateRange);
-    }
-    return formatResults(matches);
+  async execute(args, context) {
+    return runSearchInProcess(args, import.meta.url, context?.abort);
   }
 });
 historySearch.id = "opencode-history-search";

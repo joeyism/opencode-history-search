@@ -121,7 +121,7 @@ async function* listPartsSqlite(messageID) {
 var init_storage_sqlite = () => {};
 
 // src/index.ts
-import { tool } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 
 // src/storage-provider.ts
 init_storage_sqlite();
@@ -2178,7 +2178,8 @@ function formatMultitermResults(matches) {
 }
 
 // src/index.ts
-var historySearch = tool({
+var historySearch = {
+  name: "history-search",
   description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
 
 THREE SEARCH MODES:
@@ -2187,20 +2188,61 @@ THREE SEARCH MODES:
 3. FILE TRACE (filePath): Pass filePath to find which sessions created or modified a specific file.
 
 Supports keyword search, regex patterns, fuzzy search, multi-term AND search, date filtering, and role filtering.`,
-  args: {
-    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or terms is provided."),
-    terms: tool.schema.array(tool.schema.string()).optional().describe('Array of terms for multi-term AND search. Returns sessions containing ALL terms anywhere in the session (title, messages, tools, file paths). Use when the user wants sessions matching multiple concepts (e.g., ["truck", "vertex", "gemini"]). Requires 2+ terms for multi-term path; 1 term falls back to single-term query. SQLite-only. Case-insensitive substring matching.'),
-    filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
-    searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on this machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
-    mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
-    regex: tool.schema.boolean().optional().describe("Treat query as regex pattern (keyword mode only, default: false)"),
-    caseSensitive: tool.schema.boolean().optional().describe("Case-sensitive search (keyword mode only, default: false)"),
-    fuzzyThreshold: tool.schema.number().optional().describe("Fuzzy match threshold 0.0-1.0 (fuzzy mode only, default: 0.4, lower = stricter)"),
-    date: tool.schema.string().optional().describe("Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"),
-    limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
-    role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
+  input: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or terms is provided."
+      },
+      terms: {
+        type: "array",
+        items: { type: "string" },
+        description: 'Array of terms for multi-term AND search. Returns sessions containing ALL terms anywhere in the session (title, messages, tools, file paths). Use when the user wants sessions matching multiple concepts (e.g., ["truck", "vertex", "gemini"]). Requires 2+ terms for multi-term path; 1 term falls back to single-term query. SQLite-only. Case-insensitive substring matching.'
+      },
+      filePath: {
+        type: "string",
+        description: "File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."
+      },
+      searchAllProjects: {
+        type: "boolean",
+        description: "Set to true to search ALL projects on this machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."
+      },
+      mode: {
+        type: "string",
+        enum: ["keyword", "fuzzy"],
+        description: "Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"
+      },
+      regex: {
+        type: "boolean",
+        description: "Treat query as regex pattern (keyword mode only, default: false)"
+      },
+      caseSensitive: {
+        type: "boolean",
+        description: "Case-sensitive search (keyword mode only, default: false)"
+      },
+      fuzzyThreshold: {
+        type: "number",
+        description: "Fuzzy match threshold 0.0-1.0 (fuzzy mode only, default: 0.4, lower = stricter)"
+      },
+      date: {
+        type: "string",
+        description: "Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results (default: 50)"
+      },
+      role: {
+        type: "string",
+        enum: ["user", "assistant"],
+        description: "Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided."
+      }
+    },
+    additionalProperties: false
   },
-  async execute(args) {
+  async execute(raw, _context) {
+    const args = raw ?? {};
     if (!args.query && !args.filePath && !args.terms) {
       throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
     }
@@ -2219,7 +2261,7 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
           const dateRange = parseDateFilter(args.date);
           matches2 = filterByDate(matches2, dateRange);
         }
-        return formatMultitermResults(matches2);
+        return { content: formatMultitermResults(matches2) };
       }
     }
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
@@ -2231,7 +2273,7 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
         const dateRange = parseDateFilter(args.date);
         matches2 = filterByDate(matches2, dateRange);
       }
-      return formatTraceResults(matches2);
+      return { content: formatTraceResults(matches2) };
     }
     if (!args.query) {
       throw new Error("'query' is required when 'filePath' is not provided.");
@@ -2250,14 +2292,18 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
       const dateRange = parseDateFilter(args.date);
       matches = filterByDate(matches, dateRange);
     }
-    return formatResults(matches);
+    return { content: formatResults(matches) };
+  }
+};
+var src_default = Plugin.define({
+  id: "opencode-history-search",
+  async setup(ctx) {
+    ctx.tool.transform((editor) => {
+      editor.add(historySearch);
+    });
   }
 });
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input, _options) => ({
-  tool: { "history-search": historySearch }
-});
-var src_default = historySearch;
 export {
+  historySearch,
   src_default as default
 };

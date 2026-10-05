@@ -5,7 +5,7 @@ const result = await Bun.build({
   format: "esm",
   minify: false,
   splitting: false,
-  external: ["@opencode-ai/plugin", "bun"],
+  external: ["@opencode/plugin", "bun"],
   naming: {
     entry: "history-search.ts",
   },

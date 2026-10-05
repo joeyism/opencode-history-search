@@ -1,15 +1,16 @@
 import { test, expect, describe } from "bun:test";
-import historySearch from "./index";
+import plugin, { historySearch } from "./index";
 
 describe("historySearch tool", () => {
-  test("exports a tool with a description", () => {
-    expect(historySearch).toBeDefined();
-    expect(typeof historySearch).toBe("object");
+  test("exports a V2 plugin definition with id and setup", () => {
+    expect(plugin).toBeDefined();
+    expect(plugin.id).toBe("opencode-history-search");
+    expect(typeof plugin.setup).toBe("function");
   });
 
-  test("tool schema includes terms parameter for multi-term search", () => {
-    const description = (historySearch as any).description ?? "";
-    const args = (historySearch as any).args ?? {};
-    expect(args).toHaveProperty("terms");
+  test("tool input schema includes terms parameter for multi-term search", () => {
+    expect(historySearch).toBeDefined();
+    const input = (historySearch as any).input ?? {};
+    expect(input.properties).toHaveProperty("terms");
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "opencode-history-search",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Search OpenCode conversation history across all projects or current repo \u2014 trace which prompts touched specific files",
   "main": "dist/history-search.ts",
   "module": "dist/history-search.ts",
@@ -46,7 +46,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.1.48",
+    "@opencode/plugin": "^2.0.23",
     "bun": "^1.3.12",
     "fuse.js": "^7.1.0"
   },

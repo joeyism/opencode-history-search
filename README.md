@@ -26,9 +26,10 @@ Search through your OpenCode conversation history across ALL projects or within 
 
 ## Installation
 
-### OpenCode Config (Recommended)
+### OpenCode V1 Config (Recommended)
 
-Add to your OpenCode config (`~/.config/opencode/opencode.json`):
+The config key is singular: `plugin`. Add to your OpenCode config
+(`~/.config/opencode/opencode.json`):
 
 ```json
 {
@@ -40,6 +41,23 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 ```
 
 Then restart OpenCode.
+
+### OpenCode V2 Config
+
+The config key is plural: `plugins` (to contrast with V1's singular
+`plugin`). The package loads through the plugin `setup` it registers with
+`ctx.tool.transform`, while V1 keeps using the legacy tool export:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    "opencode-history-search"
+  ]
+}
+```
+
+Then restart OpenCode, or run `opencode plugin add opencode-history-search`.
 
 ### Quick Install
 

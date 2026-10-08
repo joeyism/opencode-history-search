@@ -2257,6 +2257,32 @@ historySearch.id = "opencode-history-search";
 historySearch.server = async (_input, _options) => ({
   tool: { "history-search": historySearch }
 });
+// OpenCode V2 plugin support: V2 requires a default export with `setup`
+// (or `effect`); legacy V1 fields above are kept for backward compatibility.
+historySearch.setup = async (ctx) => {
+  if (!ctx?.tool?.transform) return;
+  await ctx.tool.transform((editor) => {
+    editor.add({
+      name: "history-search",
+      description: historySearch.description,
+      input: tool.schema.object(historySearch.args),
+      execute: async (input, context) => {
+        const result = await historySearch.execute(input, {
+          sessionID: "",
+          messageID: "",
+          agent: "",
+          directory: "",
+          worktree: "",
+          abort: context.signal,
+          metadata: () => {},
+          ask: async () => {}
+        });
+        if (typeof result === "string") return { content: result };
+        return { content: result.output, metadata: result.metadata };
+      }
+    });
+  });
+};
 var src_default = historySearch;
 export {
   src_default as default

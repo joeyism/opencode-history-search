@@ -146,4 +146,64 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
   tool: { "history-search": historySearch },
 });
 
+// --- OpenCode V2 plugin support -----------------------------------------
+//
+// OpenCode V2 validates a plugin module's default export against a schema
+// that requires `{ id, setup }` (or `{ id, effect }`). The legacy tool fields
+// above (`description`, `args`, `execute`, `server`) are kept on the same
+// object so older V1 loaders keep working; V2 ignores unknown keys and only
+// requires `setup` to exist.
+//
+// The structural types below mirror `@opencode/plugin` (promise variant) so
+// the package does not need a runtime dependency on it.
+
+interface V2ToolEditor {
+  add(tool: {
+    name: string;
+    description: string;
+    input: unknown;
+    execute: (
+      input: any,
+      context: { signal: AbortSignal },
+    ) => Promise<{ content?: string; metadata?: Record<string, unknown> }>;
+  }): void;
+}
+
+interface V2PluginContext {
+  tool?: {
+    transform(callback: (editor: V2ToolEditor) => void): Promise<unknown>;
+  };
+}
+
+(historySearch as any).setup = async (ctx: V2PluginContext) => {
+  // Defensive: skip registration if this OpenCode build has no tool domain.
+  if (!ctx?.tool?.transform) return;
+
+  await ctx.tool.transform((editor) => {
+    editor.add({
+      name: "history-search",
+      description: historySearch.description,
+      // zod v4 shapes implement StandardSchemaV1, which V2 accepts directly
+      // as a tool input schema — no JSON-Schema conversion needed.
+      input: tool.schema.object(historySearch.args),
+      execute: async (input, context) => {
+        const result = await historySearch.execute(input, {
+          sessionID: "",
+          messageID: "",
+          agent: "",
+          directory: "",
+          worktree: "",
+          abort: context.signal,
+          metadata: () => {},
+          ask: async () => {},
+        });
+        // V1 ToolResult is `string | { output, metadata?, ... }`;
+        // V2 expects `{ content, metadata? }` where content is a string.
+        if (typeof result === "string") return { content: result };
+        return { content: result.output, metadata: result.metadata };
+      },
+    });
+  });
+};
+
 export default historySearch;

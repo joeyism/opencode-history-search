@@ -23,7 +23,8 @@ __export(exports_storage_sqlite, {
   listPartsSqlite: () => listPartsSqlite,
   listMessagesSqlite: () => listMessagesSqlite,
   getDbPath: () => getDbPath,
-  dbExists: () => dbExists
+  dbExists: () => dbExists,
+  contextStartSqlite: () => contextStartSqlite
 });
 import { Database } from "bun:sqlite";
 import path from "path";
@@ -116,6 +117,53 @@ async function* listPartsSqlite(messageID) {
     }
   } finally {
     db.close();
+  }
+}
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return;
+  }
+}
+function contextStartSqlite(sessionID, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
+  try {
+    const summarized = new Set;
+    const messages = _db.query(`SELECT data FROM message
+         WHERE session_id = ? AND data LIKE '%"summary"%'`).all(sessionID);
+    for (const row of messages) {
+      const info = parseJson(row.data);
+      if (info?.role === "assistant" && info.summary === true && info.finish && !info.error && typeof info.parentID === "string") {
+        summarized.add(info.parentID);
+      }
+    }
+    if (summarized.size === 0)
+      return;
+    const compactions = _db.query(`SELECT m.id, m.time_created, m.data AS message, p.data AS part
+         FROM part p
+         JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ? AND p.data LIKE '%"compaction"%'
+         ORDER BY m.time_created DESC, m.id DESC`).all(sessionID);
+    for (const row of compactions) {
+      if (!summarized.has(row.id))
+        continue;
+      const part = parseJson(row.part);
+      if (part?.type !== "compaction")
+        continue;
+      if (parseJson(row.message)?.role !== "user")
+        continue;
+      if (!part.tail_start_id)
+        return { id: row.id, time: row.time_created };
+      const tail = _db.query(`SELECT id, time_created FROM message
+           WHERE id = ? AND session_id = ?`).get(part.tail_start_id, sessionID);
+      return tail ? { id: tail.id, time: tail.time_created } : undefined;
+    }
+    return;
+  } finally {
+    if (shouldClose)
+      _db.close();
   }
 }
 var init_storage_sqlite = () => {};

@@ -100,6 +100,34 @@ describe("fuzzy search (unit tests with mocks)", () => {
     expect(Array.isArray(results)).toBe(true);
   });
 
+  describe("calling session", () => {
+    test("leaves out a calling session that wasn't compacted", async () => {
+      const results = await searchFuzzy(MOCK_PROJECT_ID, "storag", {
+        threshold: 0.4,
+        limit: 20,
+        inContext: { sessionID: "ses_001" },
+      });
+      expect(results.map((r) => r.sessionID)).not.toContain("ses_001");
+    });
+
+    test("searches only what a compaction took out of context", async () => {
+      const results = await searchFuzzy(MOCK_PROJECT_ID, "storag", {
+        threshold: 0.4,
+        limit: 20,
+        inContext: {
+          sessionID: "ses_001",
+          since: { id: "msg_002", time: 1706745601000 },
+        },
+      });
+      const own = results.filter((r) => r.sessionID === "ses_001");
+      expect(own.length).toBeGreaterThan(0);
+      for (const result of own) {
+        expect(result.matchType).not.toBe("title");
+        expect(result.messageID).toBe("msg_001");
+      }
+    });
+  });
+
   describe("global search (projectID = null)", () => {
     test("returns results from all projects", async () => {
       const results = await searchFuzzy(null, "storag", { threshold: 0.4, limit: 10 });

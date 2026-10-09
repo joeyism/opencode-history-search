@@ -92,6 +92,43 @@ describe("keyword search (unit tests with mocks)", () => {
     expect(fpMatch?.excerpt).toContain("helpers.ts");
   });
 
+  describe("calling session", () => {
+    test("leaves out a calling session that wasn't compacted", async () => {
+      const results = await searchKeyword(MOCK_PROJECT_ID, "storage", {
+        limit: 10,
+        inContext: { sessionID: "ses_001" },
+      });
+      expect(results).toHaveLength(0);
+    });
+
+    test("searches only what a compaction took out of context", async () => {
+      const results = await searchKeyword(MOCK_PROJECT_ID, "storage", {
+        limit: 10,
+        inContext: {
+          sessionID: "ses_001",
+          since: { id: "msg_002", time: 1706745601000 },
+        },
+      });
+      expect(results.length).toBeGreaterThan(0);
+      for (const result of results) {
+        expect(result.matchType).not.toBe("title");
+        expect(result.messageID).toBe("msg_001");
+      }
+    });
+
+    test("doesn't use up the limit", async () => {
+      const before = await searchKeyword(MOCK_PROJECT_ID, "a", { limit: 2 });
+      expect(before.map((r) => r.sessionID)).toEqual(["ses_001", "ses_001"]);
+
+      const after = await searchKeyword(MOCK_PROJECT_ID, "a", {
+        limit: 2,
+        inContext: { sessionID: "ses_001" },
+      });
+      expect(after).toHaveLength(2);
+      expect(after.map((r) => r.sessionID)).not.toContain("ses_001");
+    });
+  });
+
   describe("global search (projectID = null)", () => {
     test("returns results from all projects", async () => {
       const results = await searchKeyword(null, "storage", { limit: 10 });

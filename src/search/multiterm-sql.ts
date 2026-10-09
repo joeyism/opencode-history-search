@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { outsideContextSql, type InContext } from "../in-context";
 
 export interface MultitermSqlOptions {
   limit: number;
+  inContext?: InContext;
 }
 
 export interface MultitermSqlResult {
@@ -26,9 +28,11 @@ export function buildMultitermSql(
     throw new Error("terms array must contain at least one term");
   }
 
+  // A match on the calling session's title would only point at the caller.
+  const titleFilter = options.inContext ? " AND s.id != ?" : "";
   const conditions = terms
     .map((_, i) =>
-      `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`
+      `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR (s.title LIKE ? ESCAPE '\\'${titleFilter}) THEN 1 ELSE 0 END) AS match_${i}`
     )
     .join(", ");
 
@@ -37,6 +41,7 @@ export function buildMultitermSql(
     .join(" AND ");
 
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const outside = outsideContextSql(options.inContext, "p.session_id", "p.message_id");
 
   const sql = `
     SELECT s.id AS session_id, s.title, s.directory, s.time_updated, ${conditions}
@@ -44,6 +49,7 @@ export function buildMultitermSql(
     JOIN part p ON p.session_id = s.id
     WHERE 1=1
       ${projectFilter}
+      AND ${outside.sql}
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
@@ -55,10 +61,12 @@ export function buildMultitermSql(
     const escaped = term.replace(/[%_\\]/g, "\\$&");
     binds.push(`%${escaped}%`);
     binds.push(`%${escaped}%`);
+    if (options.inContext) binds.push(options.inContext.sessionID);
   }
   if (projectID !== null) {
     binds.push(projectID);
   }
+  binds.push(...outside.binds);
 
   return { sql, binds };
 }
@@ -67,10 +75,11 @@ export function searchMultitermSqlite(
   db: Database,
   projectID: string | null,
   terms: string[],
-  options?: { limit?: number },
+  options?: { limit?: number; inContext?: InContext },
 ): MultitermSearchMatch[] {
   const { sql, binds } = buildMultitermSql(terms, projectID, {
     limit: options?.limit ?? 50,
+    inContext: options?.inContext,
   });
 
   type Row = {
@@ -90,7 +99,7 @@ export function searchMultitermSqlite(
   const sessionBinds: string[] = rows.map((r) => r.session_id);
 
   const termConditions: string[] = [];
-  const allFollowBinds: string[] = [];
+  const allFollowBinds: Array<string | number> = [];
   for (const term of terms) {
     const escaped = term.replace(/[%_\\]/g, "\\$&");
     termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
@@ -100,10 +109,14 @@ export function searchMultitermSqlite(
     }
   }
 
+  const outside = outsideContextSql(options?.inContext, "session_id", "message_id");
+  allFollowBinds.push(...outside.binds);
+
   const sqlFollow = `
     SELECT session_id, id AS part_id, data
     FROM part
     WHERE ${termConditions.join(" AND ")}
+      AND ${outside.sql}
     ORDER BY time_created ASC
   `;
 
@@ -148,7 +161,7 @@ export function searchMultitermSqlite(
 export async function searchMultiterm(
   projectID: string | null,
   terms: string[],
-  options?: { limit?: number },
+  options?: { limit?: number; inContext?: InContext },
 ): Promise<MultitermSearchMatch[]> {
   const { Database } = await import("bun:sqlite");
   const { getDbPath } = await import("../storage-sqlite");

@@ -1,5 +1,6 @@
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts } from "../storage-provider";
+import { isInContext, type InContext } from "../in-context";
 
 export interface SearchMatch {
   sessionID: string;
@@ -21,6 +22,7 @@ export async function searchKeyword(
     caseSensitive?: boolean;
     limit?: number;
     role?: "user" | "assistant";
+    inContext?: InContext;
   } = {},
 ): Promise<SearchMatch[]> {
   const results: SearchMatch[] = [];
@@ -36,7 +38,11 @@ export async function searchKeyword(
   for await (const session of listSessions(projectID)) {
     if (results.length >= limit) break;
 
-    if (pattern.test(session.title)) {
+    // A match on the calling session's title would only point at the caller.
+    const calling = options.inContext?.sessionID === session.id;
+    if (calling && !options.inContext?.since) continue;
+
+    if (!calling && pattern.test(session.title)) {
       results.push({
         sessionID: session.id,
         sessionTitle: session.title,
@@ -51,6 +57,7 @@ export async function searchKeyword(
 
     for await (const message of listMessages(session.id, options.role)) {
       if (results.length >= limit) break;
+      if (isInContext(options.inContext, session.id, message)) continue;
 
       for await (const part of listParts(message.id)) {
         if (results.length >= limit) break;

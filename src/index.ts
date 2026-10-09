@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { getCurrentProjectID } from "./storage-provider";
+import { getCurrentProjectID, getInContext } from "./storage-provider";
 import { searchKeyword } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
 import { parseDateFilter, filterByDate } from "./search/date-filter";
@@ -76,10 +76,12 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
       ),
   },
 
-  async execute(args) {
+  async execute(args, context) {
     if (!args.query && !args.filePath && !args.terms) {
       throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
     }
+
+    const inContext = await getInContext(context?.sessionID);
 
     if (args.terms !== undefined) {
       if (!Array.isArray(args.terms) || args.terms.length === 0) {
@@ -91,6 +93,7 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
         const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
         let matches = await searchMultiterm(projectID, args.terms, {
           limit: args.limit,
+          inContext,
         });
         if (args.date) {
           const dateRange = parseDateFilter(args.date);
@@ -105,6 +108,7 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     if (args.filePath) {
       let matches = await traceFile(projectID, args.filePath, {
         limit: args.limit,
+        inContext,
       });
 
       if (args.date) {
@@ -125,12 +129,14 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
             threshold: args.fuzzyThreshold,
             limit: args.limit,
             role: args.role,
+            inContext,
           })
         : await searchKeyword(projectID, args.query, {
             regex: args.regex,
             caseSensitive: args.caseSensitive,
             limit: args.limit,
             role: args.role,
+            inContext,
           });
 
     if (args.date) {

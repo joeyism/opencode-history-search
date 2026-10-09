@@ -288,4 +288,27 @@ describe("file-trace search", () => {
       expect(sesE?.userPrompt).toBe("touch auth in other project");
     });
   });
+
+  describe("Group 8: calling session", () => {
+    test("leaves out a calling session that wasn't compacted", () => {
+      const results = traceFileSqlite(db, "proj_main", "src/auth.ts", {
+        inContext: { sessionID: "ses_d" },
+      });
+      expect(results.map((r) => r.sessionID)).toEqual(["ses_b", "ses_a"]);
+    });
+
+    test("leaves out touches still in context after a compaction", () => {
+      const results = traceFileSqlite(db, "proj_main", "src/auth.ts", {
+        inContext: { sessionID: "ses_d", since: { id: "msg_d3", time: 1775296801000 } },
+      });
+      expect(results.map((r) => r.sessionID)).toEqual(["ses_b", "ses_a"]);
+    });
+
+    test("keeps touches a compaction took out of context", () => {
+      const results = traceFileSqlite(db, "proj_main", "src/auth.ts", {
+        inContext: { sessionID: "ses_d", since: { id: "msg_d4", time: 1775296802000 } },
+      });
+      expect(results.map((r) => r.sessionID)).toEqual(["ses_d", "ses_b", "ses_a"]);
+    });
+  });
 });

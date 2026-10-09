@@ -300,6 +300,38 @@ async function* listParts2(messageID) {
     yield* listParts(messageID);
   }
 }
+async function getInContext(sessionID) {
+  if (!sessionID)
+    return;
+  const since = useSqlite ? contextStartSqlite(sessionID) : undefined;
+  return since ? { sessionID, since } : { sessionID };
+}
+
+// src/in-context.ts
+function isInContext(inContext, sessionID, message) {
+  if (!inContext || inContext.sessionID !== sessionID)
+    return false;
+  const since = inContext.since;
+  if (!since)
+    return true;
+  const time = message.time.created;
+  return time > since.time || time === since.time && message.id >= since.id;
+}
+function outsideContextSql(inContext, sessionColumn, messageColumn) {
+  if (!inContext)
+    return { sql: "1 = 1", binds: [] };
+  const { sessionID, since } = inContext;
+  if (!since)
+    return { sql: `${sessionColumn} != ?`, binds: [sessionID] };
+  return {
+    sql: `(${sessionColumn} != ? OR ${messageColumn} IN (
+      SELECT id FROM message
+      WHERE session_id = ?
+        AND (time_created < ? OR (time_created = ? AND id < ?))
+    ))`,
+    binds: [sessionID, sessionID, since.time, since.time, since.id]
+  };
+}
 
 // src/search/keyword.ts
 async function searchKeyword(projectID, query, options = {}) {
@@ -309,7 +341,10 @@ async function searchKeyword(projectID, query, options = {}) {
   for await (const session of listSessions2(projectID)) {
     if (results.length >= limit)
       break;
-    if (pattern.test(session.title)) {
+    const calling = options.inContext?.sessionID === session.id;
+    if (calling && !options.inContext?.since)
+      continue;
+    if (!calling && pattern.test(session.title)) {
       results.push({
         sessionID: session.id,
         sessionTitle: session.title,
@@ -325,6 +360,8 @@ async function searchKeyword(projectID, query, options = {}) {
     for await (const message of listMessages2(session.id, options.role)) {
       if (results.length >= limit)
         break;
+      if (isInContext(options.inContext, session.id, message))
+        continue;
       for await (const part of listParts2(message.id)) {
         if (results.length >= limit)
           break;
@@ -1715,14 +1752,21 @@ async function searchFuzzy(projectID, query, options = {}) {
   const items = [];
   try {
     for await (const session of listSessions2(projectID)) {
-      items.push({
-        session,
-        content: session.title,
-        type: "title",
-        timestamp: session.time.updated
-      });
+      const calling = options.inContext?.sessionID === session.id;
+      if (calling && !options.inContext?.since)
+        continue;
+      if (!calling) {
+        items.push({
+          session,
+          content: session.title,
+          type: "title",
+          timestamp: session.time.updated
+        });
+      }
       try {
         for await (const message of listMessages2(session.id, options.role)) {
+          if (isInContext(options.inContext, session.id, message))
+            continue;
           try {
             for await (const part of listParts2(message.id)) {
               if (part.type === "text" && part.text) {
@@ -1904,6 +1948,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
   const isExactPath = normalizedQuery.includes("/");
   const likePattern = `%${normalizedQuery}%`;
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const outside = outsideContextSql(options?.inContext, "s.id", "m.id");
   const sql = `
     SELECT
       s.id AS session_id,
@@ -1923,6 +1968,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       AND json_extract(p.data, '$.tool') IN ('write', 'edit')
       AND json_extract(p.data, '$.state.input.filePath') LIKE ?
       ${projectFilter}
+      AND ${outside.sql}
       
     UNION ALL
 
@@ -1943,9 +1989,11 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       AND json_extract(p.data, '$.type') = 'patch'
       AND json_extract(p.data, '$.files') LIKE ?
       ${projectFilter}
+      AND ${outside.sql}
     ORDER BY message_time DESC, source_priority ASC
   `;
-  const binds = projectID !== null ? [likePattern, projectID, likePattern, projectID] : [likePattern, likePattern];
+  const branchBinds = projectID !== null ? [likePattern, projectID, ...outside.binds] : [likePattern, ...outside.binds];
+  const binds = [...branchBinds, ...branchBinds];
   const rows = db.query(sql).all(...binds);
   const candidates = [];
   for (const row of rows) {
@@ -2047,15 +2095,18 @@ function buildMultitermSql(terms, projectID, options) {
   if (terms.length === 0) {
     throw new Error("terms array must contain at least one term");
   }
-  const conditions = terms.map((_, i) => `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
+  const titleFilter = options.inContext ? " AND s.id != ?" : "";
+  const conditions = terms.map((_, i) => `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR (s.title LIKE ? ESCAPE '\\'${titleFilter}) THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
   const having = terms.map((_, i) => `match_${i} = 1`).join(" AND ");
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const outside = outsideContextSql(options.inContext, "p.session_id", "p.message_id");
   const sql = `
     SELECT s.id AS session_id, s.title, s.directory, s.time_updated, ${conditions}
     FROM session s
     JOIN part p ON p.session_id = s.id
     WHERE 1=1
       ${projectFilter}
+      AND ${outside.sql}
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
@@ -2066,15 +2117,19 @@ function buildMultitermSql(terms, projectID, options) {
     const escaped = term.replace(/[%_\\]/g, "\\$&");
     binds.push(`%${escaped}%`);
     binds.push(`%${escaped}%`);
+    if (options.inContext)
+      binds.push(options.inContext.sessionID);
   }
   if (projectID !== null) {
     binds.push(projectID);
   }
+  binds.push(...outside.binds);
   return { sql, binds };
 }
 function searchMultitermSqlite(db, projectID, terms, options) {
   const { sql, binds } = buildMultitermSql(terms, projectID, {
-    limit: options?.limit ?? 50
+    limit: options?.limit ?? 50,
+    inContext: options?.inContext
   });
   const rows = db.query(sql).all(...binds);
   if (rows.length === 0) {
@@ -2092,10 +2147,13 @@ function searchMultitermSqlite(db, projectID, terms, options) {
       allFollowBinds.push(sid);
     }
   }
+  const outside = outsideContextSql(options?.inContext, "session_id", "message_id");
+  allFollowBinds.push(...outside.binds);
   const sqlFollow = `
     SELECT session_id, id AS part_id, data
     FROM part
     WHERE ${termConditions.join(" AND ")}
+      AND ${outside.sql}
     ORDER BY time_created ASC
   `;
   const followRows = db.query(sqlFollow).all(...allFollowBinds);
@@ -2248,10 +2306,11 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
     role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
-  async execute(args) {
+  async execute(args, context) {
     if (!args.query && !args.filePath && !args.terms) {
       throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
     }
+    const inContext = await getInContext(context?.sessionID);
     if (args.terms !== undefined) {
       if (!Array.isArray(args.terms) || args.terms.length === 0) {
         throw new Error("'terms' must be a non-empty array of strings.");
@@ -2261,7 +2320,8 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
       } else {
         const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
         let matches2 = await searchMultiterm(projectID2, args.terms, {
-          limit: args.limit
+          limit: args.limit,
+          inContext
         });
         if (args.date) {
           const dateRange = parseDateFilter(args.date);
@@ -2273,7 +2333,8 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
     if (args.filePath) {
       let matches2 = await traceFile(projectID, args.filePath, {
-        limit: args.limit
+        limit: args.limit,
+        inContext
       });
       if (args.date) {
         const dateRange = parseDateFilter(args.date);
@@ -2287,12 +2348,14 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
       threshold: args.fuzzyThreshold,
       limit: args.limit,
-      role: args.role
+      role: args.role,
+      inContext
     }) : await searchKeyword(projectID, args.query, {
       regex: args.regex,
       caseSensitive: args.caseSensitive,
       limit: args.limit,
-      role: args.role
+      role: args.role,
+      inContext
     });
     if (args.date) {
       const dateRange = parseDateFilter(args.date);

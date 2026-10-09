@@ -2,6 +2,7 @@ import Fuse from "fuse.js";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts } from "../storage-provider";
 import type { SearchMatch } from "./keyword";
+import { isInContext, type InContext } from "../in-context";
 
 interface SearchableItem {
   session: Session;
@@ -19,6 +20,7 @@ export async function searchFuzzy(
     threshold?: number; // 0.0 = exact, 1.0 = anything (default: 0.4)
     limit?: number;
     role?: "user" | "assistant";
+    inContext?: InContext;
   } = {},
 ): Promise<SearchMatch[]> {
   const threshold = options.threshold ?? 0.4;
@@ -29,17 +31,24 @@ export async function searchFuzzy(
 
   try {
     for await (const session of listSessions(projectID)) {
+      // A match on the calling session's title would only point at the caller.
+      const calling = options.inContext?.sessionID === session.id;
+      if (calling && !options.inContext?.since) continue;
+
       // Index session title
-      items.push({
-        session,
-        content: session.title,
-        type: "title",
-        timestamp: session.time.updated,
-      });
+      if (!calling) {
+        items.push({
+          session,
+          content: session.title,
+          type: "title",
+          timestamp: session.time.updated,
+        });
+      }
 
       // Index messages
       try {
         for await (const message of listMessages(session.id, options.role)) {
+          if (isInContext(options.inContext, session.id, message)) continue;
           try {
             for await (const part of listParts(message.id)) {
               if (part.type === "text" && part.text) {

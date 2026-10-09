@@ -21,6 +21,7 @@ Search through your OpenCode conversation history across ALL projects or within 
 - **Multiple Match Types** - Search across session titles, messages, tool invocations, and file paths
 - **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
 - **Project-Aware Results** - See which project directory each result came from
+- **No Echoes of the Current Session** - Results leave out what the calling session already has in its context, including the search's own tool call; after a compaction, the part of the session that was compacted away stays searchable
 - **Fast** - Single-term queries ~500ms; multi-term session-level AND ~1s (on 100k+ parts)
 - **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
 

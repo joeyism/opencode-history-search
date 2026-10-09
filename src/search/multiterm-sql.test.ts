@@ -190,4 +190,37 @@ describe("searchMultitermSqlite (in-memory SQLite, real schema)", () => {
   test("async wrapper searchMultiterm is exported", () => {
     expect(typeof searchMultiterm).toBe("function");
   });
+
+  test("leaves out a calling session that wasn't compacted", () => {
+    const results = searchMultitermSqlite(db, "proj_main", ["truck", "vertex", "gemini"], {
+      inContext: { sessionID: "ses_b" },
+    });
+    const ids = results.map((r) => r.sessionID);
+    expect(ids).not.toContain("ses_b");
+    expect(ids).toContain("ses_d");
+  });
+
+  test("searches only what a compaction took out of context", () => {
+    const inContext = {
+      sessionID: "ses_b",
+      since: { id: "msg_b2", time: 1774200001000 },
+    };
+
+    // "truck" and "gemini" are only in msg_b2, which is still in context.
+    const all = searchMultitermSqlite(db, "proj_main", ["truck", "vertex", "gemini"], { inContext });
+    expect(all.map((r) => r.sessionID)).not.toContain("ses_b");
+
+    const early = searchMultitermSqlite(db, "proj_main", ["vertex", "please"], { inContext });
+    const sesB = early.find((r) => r.sessionID === "ses_b");
+    expect(sesB).toBeDefined();
+    expect(sesB!.termHits.get("vertex")?.partID).toBe("part_b1");
+  });
+
+  test("the calling session's title doesn't count toward a match", () => {
+    // ses_b's title is "Vertex Gemini fine-tune"; only "vertex" is in msg_b1.
+    const results = searchMultitermSqlite(db, "proj_main", ["vertex", "gemini"], {
+      inContext: { sessionID: "ses_b", since: { id: "msg_b2", time: 1774200001000 } },
+    });
+    expect(results.map((r) => r.sessionID)).not.toContain("ses_b");
+  });
 });

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDbPath } from "../storage-sqlite";
+import { outsideContextSql, type InContext } from "../in-context";
 
 export interface FileTraceResult {
   sessionID: string;
@@ -13,6 +14,7 @@ export interface FileTraceResult {
 
 export interface TraceFileOptions {
   limit?: number;
+  inContext?: InContext;
 }
 
 export function traceFileSqlite(
@@ -28,6 +30,7 @@ export function traceFileSqlite(
   const likePattern = `%${normalizedQuery}%`;
 
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const outside = outsideContextSql(options?.inContext, "s.id", "m.id");
 
   const sql = `
     SELECT
@@ -48,6 +51,7 @@ export function traceFileSqlite(
       AND json_extract(p.data, '$.tool') IN ('write', 'edit')
       AND json_extract(p.data, '$.state.input.filePath') LIKE ?
       ${projectFilter}
+      AND ${outside.sql}
       
     UNION ALL
 
@@ -68,12 +72,14 @@ export function traceFileSqlite(
       AND json_extract(p.data, '$.type') = 'patch'
       AND json_extract(p.data, '$.files') LIKE ?
       ${projectFilter}
+      AND ${outside.sql}
     ORDER BY message_time DESC, source_priority ASC
   `;
 
-  const binds: Array<string> = projectID !== null
-    ? [likePattern, projectID, likePattern, projectID]
-    : [likePattern, likePattern];
+  const branchBinds: Array<string | number> = projectID !== null
+    ? [likePattern, projectID, ...outside.binds]
+    : [likePattern, ...outside.binds];
+  const binds = [...branchBinds, ...branchBinds];
 
   const rows = db.query(sql).all(...binds) as Array<{
     session_id: string;

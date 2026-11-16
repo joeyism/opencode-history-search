@@ -1,3 +1,4 @@
+import type { Plugin } from "@opencode/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { getCurrentProjectID } from "./storage-provider";
 import { searchKeyword } from "./search/keyword";
@@ -76,74 +77,108 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
       ),
   },
 
-  async execute(args) {
-    if (!args.query && !args.filePath && !args.terms) {
-      throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  execute(args): Promise<string> {
+    return executeHistorySearch(args);
+  },
+});
+
+async function executeHistorySearch(
+  args: Parameters<typeof historySearch.execute>[0],
+  currentProjectID?: string,
+): Promise<string> {
+  if (!args.query && !args.filePath && !args.terms) {
+    throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  }
+
+  if (args.terms !== undefined) {
+    if (!Array.isArray(args.terms) || args.terms.length === 0) {
+      throw new Error("'terms' must be a non-empty array of strings.");
     }
-
-    if (args.terms !== undefined) {
-      if (!Array.isArray(args.terms) || args.terms.length === 0) {
-        throw new Error("'terms' must be a non-empty array of strings.");
-      }
-      if (args.terms.length === 1) {
-        args.query = args.terms[0];
-      } else {
-        const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
-        let matches = await searchMultiterm(projectID, args.terms, {
-          limit: args.limit,
-        });
-        if (args.date) {
-          const dateRange = parseDateFilter(args.date);
-          matches = filterByDate(matches, dateRange);
-        }
-        return formatMultitermResults(matches);
-      }
-    }
-
-    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
-
-    if (args.filePath) {
-      let matches = await traceFile(projectID, args.filePath, {
+    if (args.terms.length === 1) {
+      args.query = args.terms[0];
+    } else {
+      const projectID = args.searchAllProjects
+        ? null
+        : currentProjectID ?? (await getCurrentProjectID());
+      let matches = await searchMultiterm(projectID, args.terms, {
         limit: args.limit,
       });
-
       if (args.date) {
         const dateRange = parseDateFilter(args.date);
         matches = filterByDate(matches, dateRange);
       }
-
-      return formatTraceResults(matches);
+      return formatMultitermResults(matches);
     }
+  }
 
-    if (!args.query) {
-      throw new Error("'query' is required when 'filePath' is not provided.");
-    }
+  const projectID = args.searchAllProjects
+    ? null
+    : currentProjectID ?? (await getCurrentProjectID());
 
-    let matches =
-      args.mode === "fuzzy"
-        ? await searchFuzzy(projectID, args.query, {
-            threshold: args.fuzzyThreshold,
-            limit: args.limit,
-            role: args.role,
-          })
-        : await searchKeyword(projectID, args.query, {
-            regex: args.regex,
-            caseSensitive: args.caseSensitive,
-            limit: args.limit,
-            role: args.role,
-          });
+  if (args.filePath) {
+    let matches = await traceFile(projectID, args.filePath, {
+      limit: args.limit,
+    });
 
     if (args.date) {
       const dateRange = parseDateFilter(args.date);
       matches = filterByDate(matches, dateRange);
     }
 
-    return formatResults(matches);
-  },
-});
-(historySearch as any).id = "opencode-history-search";
-(historySearch as any).server = async (_input?: unknown, _options?: unknown) => ({
-  tool: { "history-search": historySearch },
-});
+    return formatTraceResults(matches);
+  }
 
-export default historySearch;
+  if (!args.query) {
+    throw new Error("'query' is required when 'filePath' is not provided.");
+  }
+
+  let matches =
+    args.mode === "fuzzy"
+      ? await searchFuzzy(projectID, args.query, {
+          threshold: args.fuzzyThreshold,
+          limit: args.limit,
+          role: args.role,
+        })
+      : await searchKeyword(projectID, args.query, {
+          regex: args.regex,
+          caseSensitive: args.caseSensitive,
+          limit: args.limit,
+          role: args.role,
+        });
+
+  if (args.date) {
+    const dateRange = parseDateFilter(args.date);
+    matches = filterByDate(matches, dateRange);
+  }
+
+  return formatResults(matches);
+}
+
+const historySearchInput = tool.schema.object(historySearch.args);
+
+const opencodePlugin = {
+  id: "opencode-history-search",
+  async setup(ctx) {
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "history-search",
+        description: historySearch.description,
+        input: tool.schema.toJSONSchema(historySearchInput),
+        async execute(input) {
+          const args = historySearchInput.parse(input);
+          return {
+            content: await executeHistorySearch(args, ctx.location.project.id),
+          };
+        },
+      });
+    });
+  },
+} satisfies Plugin.Plugin;
+
+export default {
+  ...historySearch,
+  ...opencodePlugin,
+  async server() {
+    return { tool: { "history-search": historySearch } };
+  },
+};

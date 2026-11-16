@@ -2200,64 +2200,88 @@ Supports keyword search, regex patterns, fuzzy search, multi-term AND search, da
     limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
     role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
-  async execute(args) {
-    if (!args.query && !args.filePath && !args.terms) {
-      throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  execute(args) {
+    return executeHistorySearch(args);
+  }
+});
+async function executeHistorySearch(args, currentProjectID) {
+  if (!args.query && !args.filePath && !args.terms) {
+    throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  }
+  if (args.terms !== undefined) {
+    if (!Array.isArray(args.terms) || args.terms.length === 0) {
+      throw new Error("'terms' must be a non-empty array of strings.");
     }
-    if (args.terms !== undefined) {
-      if (!Array.isArray(args.terms) || args.terms.length === 0) {
-        throw new Error("'terms' must be a non-empty array of strings.");
-      }
-      if (args.terms.length === 1) {
-        args.query = args.terms[0];
-      } else {
-        const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
-        let matches2 = await searchMultiterm(projectID2, args.terms, {
-          limit: args.limit
-        });
-        if (args.date) {
-          const dateRange = parseDateFilter(args.date);
-          matches2 = filterByDate(matches2, dateRange);
-        }
-        return formatMultitermResults(matches2);
-      }
-    }
-    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
-    if (args.filePath) {
-      let matches2 = await traceFile(projectID, args.filePath, {
+    if (args.terms.length === 1) {
+      args.query = args.terms[0];
+    } else {
+      const projectID2 = args.searchAllProjects ? null : currentProjectID ?? await getCurrentProjectID();
+      let matches2 = await searchMultiterm(projectID2, args.terms, {
         limit: args.limit
       });
       if (args.date) {
         const dateRange = parseDateFilter(args.date);
         matches2 = filterByDate(matches2, dateRange);
       }
-      return formatTraceResults(matches2);
+      return formatMultitermResults(matches2);
     }
-    if (!args.query) {
-      throw new Error("'query' is required when 'filePath' is not provided.");
-    }
-    let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
-      threshold: args.fuzzyThreshold,
-      limit: args.limit,
-      role: args.role
-    }) : await searchKeyword(projectID, args.query, {
-      regex: args.regex,
-      caseSensitive: args.caseSensitive,
-      limit: args.limit,
-      role: args.role
+  }
+  const projectID = args.searchAllProjects ? null : currentProjectID ?? await getCurrentProjectID();
+  if (args.filePath) {
+    let matches2 = await traceFile(projectID, args.filePath, {
+      limit: args.limit
     });
     if (args.date) {
       const dateRange = parseDateFilter(args.date);
-      matches = filterByDate(matches, dateRange);
+      matches2 = filterByDate(matches2, dateRange);
     }
-    return formatResults(matches);
+    return formatTraceResults(matches2);
   }
-});
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input, _options) => ({
-  tool: { "history-search": historySearch }
-});
-var src_default = historySearch;
+  if (!args.query) {
+    throw new Error("'query' is required when 'filePath' is not provided.");
+  }
+  let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
+    threshold: args.fuzzyThreshold,
+    limit: args.limit,
+    role: args.role
+  }) : await searchKeyword(projectID, args.query, {
+    regex: args.regex,
+    caseSensitive: args.caseSensitive,
+    limit: args.limit,
+    role: args.role
+  });
+  if (args.date) {
+    const dateRange = parseDateFilter(args.date);
+    matches = filterByDate(matches, dateRange);
+  }
+  return formatResults(matches);
+}
+var historySearchInput = tool.schema.object(historySearch.args);
+var opencodePlugin = {
+  id: "opencode-history-search",
+  async setup(ctx) {
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "history-search",
+        description: historySearch.description,
+        input: tool.schema.toJSONSchema(historySearchInput),
+        async execute(input) {
+          const args = historySearchInput.parse(input);
+          return {
+            content: await executeHistorySearch(args, ctx.location.project.id)
+          };
+        }
+      });
+    });
+  }
+};
+var src_default = {
+  ...historySearch,
+  ...opencodePlugin,
+  async server() {
+    return { tool: { "history-search": historySearch } };
+  }
+};
 export {
   src_default as default
 };

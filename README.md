@@ -22,7 +22,7 @@ Search through your OpenCode conversation history across ALL projects or within 
 - **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
 - **Project-Aware Results** - See which project directory each result came from
 - **Fast** - Single-term queries ~500ms; multi-term session-level AND ~1s (on 100k+ parts)
-- **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
+- **OpenCode 2 + Legacy Support** - Native V2 plugin registration, with the existing V1 entrypoint and SQLite/JSON search preserved
 
 ## Installation
 
@@ -33,7 +33,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "opencode-history-search"
   ]
 }
@@ -41,7 +41,9 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 Then restart OpenCode.
 
-### Quick Install
+### Legacy OpenCode 1 installation
+
+For OpenCode 2, use the plugin configuration above. The installer below copies a V1 custom tool.
 
 ```bash
 # Using npx (npm)
